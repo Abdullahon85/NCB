@@ -28,7 +28,8 @@ DEBUG = True
 
 ALLOWED_HOSTS = [
     '.onrender.com',
-    '127.0.0.1'
+    '127.0.0.1',
+    "https://ncb-1.onrender.com",
 ]
 
 
@@ -62,6 +63,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://localhost:8080",
     "https://nargi.netlify.app",
+    "https://ncff.netlify.app",
 ]
 
 ROOT_URLCONF = 'config.urls'
