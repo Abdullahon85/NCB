@@ -68,6 +68,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:8080",
     "https://nargi.netlify.app",
     "https://ncff.netlify.app",
+    "https://ncf-puce.vercel.app",
 ]
 
 CORS_ALLOW_HEADERS = [
