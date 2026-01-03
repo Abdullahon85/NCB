@@ -45,6 +45,7 @@ INSTALLED_APPS = [
 
     'api',
     'rest_framework',
+    'rest_framework_simplejwt',
     'corsheaders',
 ]
 
@@ -61,9 +62,26 @@ MIDDLEWARE = [
 ]
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
     "http://localhost:8080",
     "https://nargi.netlify.app",
     "https://ncff.netlify.app",
+]
+
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+    'cache-control',
+    'pragma',
+    'expires',
 ]
 
 ROOT_URLCONF = 'config.urls'
@@ -122,8 +140,21 @@ REST_FRAMEWORK = {
         'rest_framework.renderers.JSONRenderer',
     ],
     'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
         'rest_framework.authentication.SessionAuthentication',
     ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticatedOrReadOnly',
+    ],
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '1000/hour',  # Increased for public catalog browsing
+        'user': '5000/hour',
+        'login': '5/hour',  # Keep strict for login attempts
+    }
 }
 
 # Session settings
@@ -134,9 +165,29 @@ SESSION_COOKIE_SAMESITE = 'Lax'
 # CSRF settings for API
 CSRF_COOKIE_HTTPONLY = False
 CSRF_COOKIE_SAMESITE = 'Lax'
+CSRF_TRUSTED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "https://nargi.netlify.app",
+    "https://ncff.netlify.app",
+]
 
 CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
+
+# JWT Settings
+from datetime import timedelta
+
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=15),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': False,
+    'ALGORITHM': 'HS256',
+    'SIGNING_KEY': SECRET_KEY,
+    'AUTH_HEADER_TYPES': ('Bearer',),
+    'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),
+}
 # Internationalization
 # https://docs.djangoproject.com/en/5.2/topics/i18n/
 

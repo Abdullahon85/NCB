@@ -3,10 +3,13 @@ from decimal import Decimal
 from rest_framework import viewsets, generics, status, filters
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.http import Http404
 from django.http import JsonResponse
-from rest_framework.decorators import api_view, action
+from rest_framework.decorators import api_view, action, permission_classes
 from django.db.models import Q, Min, Max, Count
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from .throttles import LoginRateThrottle
 from .models import Brand, Product
 from .serializers import BrandSerializer, ProductListSerializer
 from .filters import BrandFilter
@@ -22,6 +25,57 @@ from .serializers import (
     ContactInfoSerializer, ContactMessageSerializer, BrandSerializer, TagSerializer,
     ProductTagGroupSerializer
 )
+
+# ============ JWT AUTH VIEWS ============
+class AdminTokenObtainPairView(TokenObtainPairView):
+    """
+    JWT Login endpoint with rate limiting to prevent brute force attacks.
+    """
+    throttle_classes = [LoginRateThrottle]
+    permission_classes = [AllowAny]
+
+
+class AdminTokenRefreshView(TokenRefreshView):
+    """
+    JWT Token refresh endpoint.
+    """
+    permission_classes = [AllowAny]
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def admin_me(request):
+    """
+    Get current authenticated user information.
+    """
+    user = request.user
+    if not user.is_staff:
+        return Response(
+            {'detail': 'Only admin users can access this endpoint.'},
+            status=status.HTTP_403_FORBIDDEN
+        )
+    
+    return Response({
+        'id': user.id,
+        'username': user.username,
+        'email': user.email,
+        'first_name': user.first_name,
+        'last_name': user.last_name,
+        'is_staff': user.is_staff,
+        'is_superuser': user.is_superuser,
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def admin_logout(request):
+    """
+    Logout endpoint (client should clear tokens).
+    """
+    return Response({'detail': 'Logout successful'}, status=status.HTTP_200_OK)
+
+
+# ============ EXISTING VIEWS ============
 @api_view(['GET'])
 def features_tags_by_category(request):
     category_id = request.GET.get('category')
@@ -908,10 +962,14 @@ def admin_me(request):
 
 
 @api_view(['POST'])
+@permission_classes([IsAuthenticated])
 def admin_change_password(request):
-    """Смена пароля"""
-    if not request.user.is_authenticated:
-        return Response({'error': 'Не авторизован'}, status=status.HTTP_401_UNAUTHORIZED)
+    """Смена пароля для админов (JWT совместимая версия)"""
+    if not request.user.is_staff:
+        return Response(
+            {'detail': 'Only admin users can access this endpoint.'},
+            status=status.HTTP_403_FORBIDDEN
+        )
     
     serializer = ChangePasswordSerializer(data=request.data)
     if not serializer.is_valid():
@@ -924,17 +982,18 @@ def admin_change_password(request):
     user.set_password(serializer.validated_data['new_password'])
     user.save()
     
-    # Перелогиниваем пользователя
-    login(request, user)
-    
     return Response({'message': 'Пароль успешно изменен'})
 
 
 @api_view(['PUT', 'PATCH'])
+@permission_classes([IsAuthenticated])
 def admin_update_profile(request):
-    """Обновление профиля"""
-    if not request.user.is_authenticated:
-        return Response({'error': 'Не авторизован'}, status=status.HTTP_401_UNAUTHORIZED)
+    """Обновление профиля админа (JWT совместимая версия)"""
+    if not request.user.is_staff:
+        return Response(
+            {'detail': 'Only admin users can access this endpoint.'},
+            status=status.HTTP_403_FORBIDDEN
+        )
     
     serializer = UpdateProfileSerializer(request.user, data=request.data, partial=True)
     if serializer.is_valid():
@@ -946,8 +1005,15 @@ def admin_update_profile(request):
 # ============ DASHBOARD STATS ============
 
 @api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def admin_stats(request):
-    """Статистика для Dashboard"""
+    """Статистика для Dashboard (JWT совместимая версия)"""
+    if not request.user.is_staff:
+        return Response(
+            {'detail': 'Only admin users can access this endpoint.'},
+            status=status.HTTP_403_FORBIDDEN
+        )
+    
     stats = {
         'products_count': Product.objects.count(),
         'categories_count': Category.objects.count(),

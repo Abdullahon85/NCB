@@ -22,9 +22,21 @@ class PriceRangeSerializer(serializers.Serializer):
     max_price = serializers.DecimalField(max_digits=10, decimal_places=2)
 
 class ImageSerializer(serializers.ModelSerializer):
+    image = serializers.SerializerMethodField()
+    
     class Meta:
         model = Image
         fields = ['id', 'image', 'is_main', 'order']
+    
+    def get_image(self, obj):
+        if obj.image:
+            request = self.context.get('request')
+            try:
+                url = obj.image.url
+                return request.build_absolute_uri(url) if request else url
+            except:
+                return str(obj.image)
+        return None
 
 class ProductFeatureSerializer(serializers.ModelSerializer):
     feature_name = serializers.CharField(source='feature.name', read_only=True, required=False)
@@ -101,8 +113,10 @@ class BrandSerializer(serializers.ModelSerializer):
 
     def get_image(self, obj):
         if obj.logo:
+            request = self.context.get('request')
             try:
-                return obj.logo.url
+                url = obj.logo.url
+                return request.build_absolute_uri(url) if request else url
             except Exception:
                 return str(obj.logo)
         return None
@@ -216,16 +230,19 @@ class ProductAdminSerializer(serializers.ModelSerializer):
         if not main:
             main = obj.images.first()
         if main and main.image:
+            request = self.context.get('request')
             try:
-                return main.image.url
+                url = main.image.url
+                return request.build_absolute_uri(url) if request else url
             except:
                 return str(main.image)
         return None
     
     def get_images(self, obj):
+        request = self.context.get('request')
         return [{
             'id': img.id,
-            'image': img.image.url if img.image else None,
+            'image': request.build_absolute_uri(img.image.url) if img.image and request else (img.image.url if img.image else None),
             'is_main': img.is_main,
             'order': img.order
         } for img in obj.images.all().order_by('order')]
@@ -264,10 +281,10 @@ class BrandAdminSerializer(serializers.ModelSerializer):
     
     def get_logo_url(self, obj):
         if obj.logo:
-            try:
-                return obj.logo.url
-            except:
-                return str(obj.logo)
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.logo.url)
+            return obj.logo.url
         return None
 
 

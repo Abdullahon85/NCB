@@ -24,10 +24,12 @@ from .views import (
     AboutContentAdminView,
     ContactInfoAdminView,
     ContactMessageAdminViewSet,
-    # Auth views
-    admin_login,
-    admin_logout,
+    # JWT Auth views
+    AdminTokenObtainPairView,
+    AdminTokenRefreshView,
     admin_me,
+    admin_logout,
+    # Old Auth views (if exist)
     admin_change_password,
     admin_update_profile,
     admin_stats,
@@ -65,8 +67,9 @@ urlpatterns = [
     path('admin/about/', AboutContentAdminView.as_view(), name='admin-about'),
     path('admin/contact/', ContactInfoAdminView.as_view(), name='admin-contact'),
     path('admin/stats/', admin_stats, name='admin-stats'),
-    # Auth endpoints
-    path('admin/auth/login/', admin_login, name='admin-login'),
+    # JWT Auth endpoints
+    path('admin/auth/login/', AdminTokenObtainPairView.as_view(), name='admin-login'),
+    path('admin/auth/refresh/', AdminTokenRefreshView.as_view(), name='admin-refresh'),
     path('admin/auth/logout/', admin_logout, name='admin-logout'),
     path('admin/auth/me/', admin_me, name='admin-me'),
     path('admin/auth/change-password/', admin_change_password, name='admin-change-password'),
