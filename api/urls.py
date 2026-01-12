@@ -10,7 +10,10 @@ from .views import (
     ContactMessageView,
     BrandViewSet,
     TagViewSet,
+    BannerViewSet,
     features_tags_by_category,
+    feature_values_by_feature,
+    tags_by_tag_name,
     # Admin ViewSets
     ProductAdminViewSet,
     CategoryAdminViewSet,
@@ -21,6 +24,7 @@ from .views import (
     FeatureValueAdminViewSet,
     NewsAdminViewSet,
     ImageAdminViewSet,
+    BannerAdminViewSet,
     AboutContentAdminView,
     ContactInfoAdminView,
     ContactMessageAdminViewSet,
@@ -42,6 +46,7 @@ router.register(r'products', ProductViewSet)
 router.register(r'news', NewsViewSet)
 router.register(r'brands', BrandViewSet, basename='brand')
 router.register(r'tags', TagViewSet, basename='tag')
+router.register(r'banners', BannerViewSet, basename='banner')
 
 # Admin endpoints
 router.register(r'admin/products', ProductAdminViewSet, basename='admin-products')
@@ -54,6 +59,7 @@ router.register(r'admin/feature-values', FeatureValueAdminViewSet, basename='adm
 router.register(r'admin/news', NewsAdminViewSet, basename='admin-news')
 router.register(r'admin/images', ImageAdminViewSet, basename='admin-images')
 router.register(r'admin/messages', ContactMessageAdminViewSet, basename='admin-messages')
+router.register(r'admin/banners', BannerAdminViewSet, basename='admin-banners')
 
 urlpatterns = [
     path('', include(router.urls)),
@@ -63,6 +69,7 @@ urlpatterns = [
     path('contact/message/', ContactMessageView.as_view(), name='contact-message'),
     path('products/by-feature/', views.products_by_feature_value, name='products-by-feature'),
     path('features-tags-by-category/', features_tags_by_category, name='features_tags_by_category'),
+    path('feature-values-by-feature/', feature_values_by_feature, name='feature_values_by_feature'),
     # Admin endpoints
     path('admin/about/', AboutContentAdminView.as_view(), name='admin-about'),
     path('admin/contact/', ContactInfoAdminView.as_view(), name='admin-contact'),
@@ -74,4 +81,6 @@ urlpatterns = [
     path('admin/auth/me/', admin_me, name='admin-me'),
     path('admin/auth/change-password/', admin_change_password, name='admin-change-password'),
     path('admin/auth/profile/', admin_update_profile, name='admin-profile'),
+    # Tags by TagName
+    path('admin/tags-by-tag-name/<int:tag_name_id>/', tags_by_tag_name, name='tags-by-tag-name'),
 ]

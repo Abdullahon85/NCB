@@ -29,14 +29,16 @@ class Category(models.Model):
         return self.name
 
     def get_all_products(self):
-        """Получить все товары категории включая подкатегории"""
+        """Получить все товары категории включая подкатегории (оптимизировано)"""
         categories = [self]
         children = list(self.children.all())
         while children:
             child = children.pop()
             categories.append(child)
             children.extend(list(child.children.all()))
-        return Product.objects.filter(category__in=categories)
+        return Product.objects.filter(category__in=categories).select_related(
+            'category', 'brand'
+        ).prefetch_related('images')
 
 class Brand(models.Model):
     name = models.CharField(max_length=150, unique=True)
@@ -134,7 +136,7 @@ class FeatureValue(models.Model):
     class Meta:
         verbose_name = 'Значение характеристики'
         verbose_name_plural = 'Значения характеристик'
-        unique_together = ['category', 'value']
+        unique_together = ['feature', 'value']
         ordering = ['value']
 
     def __str__(self):
@@ -173,7 +175,7 @@ class ProductFeature(models.Model):
         return f'{self.feature.name if self.feature else "N/A"}: {self.value if self.value else "N/A"}'
 
 class Tag(models.Model):
-    name = models.CharField(max_length=100, unique=True, verbose_name='Тег')
+    name = models.CharField(max_length=100, verbose_name='Тег')
     slug = models.SlugField(max_length=120, unique=True, blank=True)
     category = models.ForeignKey(
         'Category',
@@ -183,12 +185,21 @@ class Tag(models.Model):
         blank=True,
         verbose_name='Категория'
     )
+    tag_name = models.ForeignKey(
+        'TagName',
+        on_delete=models.SET_NULL,
+        related_name='tags',
+        null=True,
+        blank=True,
+        verbose_name='Группа тега'
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         verbose_name = 'Тег'
         verbose_name_plural = 'Теги'
         ordering = ['name']
+        unique_together = ['tag_name', 'name']
 
     def save(self, *args, **kwargs):
         if not self.slug:
@@ -197,16 +208,6 @@ class Tag(models.Model):
 
     def __str__(self):
         return self.name
-
-    class Meta:
-        verbose_name = 'Тег'
-        verbose_name_plural = 'Теги'
-        ordering = ['name']
-
-    def save(self, *args, **kwargs):
-        if not self.slug:
-            self.slug = slugify(self.name)[:120]
-        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.name
@@ -359,3 +360,23 @@ class ContactMessage(models.Model):
 
     def __str__(self):
         return f'Сообщение от {self.name} ({self.created_at.strftime("%d.%m.%Y")})'
+
+
+class Banner(models.Model):
+    """Баннер для слайдера на главной странице"""
+    title = models.CharField(max_length=200, verbose_name='Заголовок')
+    description = models.TextField(blank=True, null=True, verbose_name='Описание')
+    image = models.ImageField(upload_to='banners/', blank=True, null=True, verbose_name='Изображение')
+    link = models.CharField(max_length=500, blank=True, null=True, verbose_name='Ссылка')
+    order = models.IntegerField(default=0, verbose_name='Порядок сортировки')
+    is_active = models.BooleanField(default=True, verbose_name='Активен')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Баннер'
+        verbose_name_plural = 'Баннеры'
+        ordering = ['order', '-created_at']
+
+    def __str__(self):
+        return self.title

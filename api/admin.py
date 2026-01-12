@@ -2,7 +2,7 @@
 from django.contrib import admin
 from .models import (
     Tag, Category, Product, Image, Feature, ProductFeature, TagName, FeatureValue,
-    NewsItem, AboutContent, ContactInfo, ContactMessage, Brand, ProductTagGroup
+    NewsItem, AboutContent, ContactInfo, ContactMessage, Brand, ProductTagGroup, Banner
 )
 from django import forms
 
@@ -179,3 +179,12 @@ class ContactMessageAdmin(admin.ModelAdmin):
     search_fields = ['name', 'email', 'message']
     date_hierarchy = 'created_at'
     readonly_fields = ['name', 'email', 'message', 'created_at']
+
+
+@admin.register(Banner)
+class BannerAdmin(admin.ModelAdmin):
+    list_display = ['title', 'order', 'is_active', 'created_at']
+    list_filter = ['is_active']
+    list_editable = ['order', 'is_active']
+    search_fields = ['title', 'description']
+    ordering = ['order']

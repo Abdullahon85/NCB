@@ -9,6 +9,8 @@ from django.http import JsonResponse
 from rest_framework.decorators import api_view, action, permission_classes
 from django.db.models import Q, Min, Max, Count
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from django.views.decorators.cache import cache_page
+from django.utils.decorators import method_decorator
 from .throttles import LoginRateThrottle
 from .models import Brand, Product
 from .serializers import BrandSerializer, ProductListSerializer
@@ -17,13 +19,13 @@ from .filters import BrandFilter
 from .pagination import StandardResultsSetPagination
 from .models import (
     Category, Product, NewsItem, AboutContent,
-    ContactInfo, ContactMessage, Brand, ProductFeature, Tag, Feature, ProductTagGroup, TagName, FeatureValue, Image
+    ContactInfo, ContactMessage, Brand, ProductFeature, Tag, Feature, ProductTagGroup, TagName, FeatureValue, Image, Banner
 )
 from .serializers import (
     CategorySerializer, ProductListSerializer, ProductDetailSerializer,
     NewsItemSerializer, NewsDetailSerializer, AboutContentSerializer,
     ContactInfoSerializer, ContactMessageSerializer, BrandSerializer, TagSerializer,
-    ProductTagGroupSerializer
+    ProductTagGroupSerializer, BannerSerializer
 )
 
 # ============ JWT AUTH VIEWS ============
@@ -79,13 +81,28 @@ def admin_logout(request):
 @api_view(['GET'])
 def features_tags_by_category(request):
     category_id = request.GET.get('category')
+    feature_id = request.GET.get('feature')  # Для фильтрации значений по характеристике
+    
     features = Feature.objects.filter(category_id=category_id)
     tags = Tag.objects.filter(category_id=category_id)
-    tag_names = TagName.objects.filter(category_id=category_id)
-    feature_values = FeatureValue.objects.filter(category_id=category_id)
+    tag_names = TagName.objects.filter(category_id=category_id).prefetch_related('tags')
+    
+    # Фильтруем значения - либо по feature_id, либо по category_id
+    if feature_id:
+        feature_values = FeatureValue.objects.filter(feature_id=feature_id)
+    else:
+        feature_values = FeatureValue.objects.filter(category_id=category_id)
+    
     features_data = list(features.values('id', 'name'))
-    tags_data = list(tags.values('id', 'name'))
-    tag_names_data = list(tag_names.values('id', 'name'))
+    tags_data = list(tags.values('id', 'name', 'tag_name'))
+    # Включаем связанные теги для каждого TagName
+    tag_names_data = []
+    for tn in tag_names:
+        tag_names_data.append({
+            'id': tn.id,
+            'name': tn.name,
+            'tags': [{'id': t.id, 'name': t.name} for t in tn.tags.all()]
+        })
     feature_values_data = list(feature_values.values('id', 'value', 'feature_id', 'feature__name'))
     return JsonResponse({
         'features': features_data,
@@ -93,6 +110,17 @@ def features_tags_by_category(request):
         'tag_names': tag_names_data,
         'feature_values': feature_values_data
     })
+
+
+@api_view(['GET'])
+def feature_values_by_feature(request):
+    """Получить значения характеристики по её ID"""
+    feature_id = request.GET.get('feature_id')
+    if not feature_id:
+        return JsonResponse({'error': 'feature_id is required'}, status=400)
+    
+    values = FeatureValue.objects.filter(feature_id=feature_id).values('id', 'value')
+    return JsonResponse({'values': list(values)})
 class TagViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Tag.objects.all().order_by('name')
     serializer_class = TagSerializer
@@ -285,6 +313,11 @@ class BrandViewSet(viewsets.ReadOnlyModelViewSet):
     search_fields = ['name', 'description']
     pagination_class = StandardResultsSetPagination
 
+    # Кэширование списка брендов на 5 минут
+    @method_decorator(cache_page(60 * 5))
+    def list(self, request, *args, **kwargs):
+        return super().list(request, *args, **kwargs)
+
     def get_queryset(self):
         queryset = Brand.objects.annotate(
             products_count=Count('products')
@@ -366,6 +399,16 @@ class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Category.objects.filter(parent=None).order_by('order', 'name')
     serializer_class = CategorySerializer
     lookup_field = 'slug'
+
+    # Кэширование списка категорий на 5 минут
+    @method_decorator(cache_page(60 * 5))
+    def list(self, request, *args, **kwargs):
+        return super().list(request, *args, **kwargs)
+
+    # Кэширование детальной категории на 5 минут
+    @method_decorator(cache_page(60 * 5))
+    def retrieve(self, request, *args, **kwargs):
+        return super().retrieve(request, *args, **kwargs)
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -454,6 +497,17 @@ class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
         return Response(result)
 
 
+class BannerViewSet(viewsets.ReadOnlyModelViewSet):
+    """Публичный ViewSet для баннеров"""
+    queryset = Banner.objects.filter(is_active=True).order_by('order')
+    serializer_class = BannerSerializer
+    pagination_class = None
+
+    @method_decorator(cache_page(60 * 5))
+    def list(self, request, *args, **kwargs):
+        return super().list(request, *args, **kwargs)
+
+
 class NewsViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = NewsItem.objects.filter(is_published=True).order_by('-pub_date')
     lookup_field = 'slug'
@@ -498,6 +552,7 @@ class ContactInfoView(generics.RetrieveAPIView):
 class ContactMessageView(generics.CreateAPIView):
     queryset = ContactMessage.objects.all()
     serializer_class = ContactMessageSerializer
+    permission_classes = [AllowAny]
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -764,11 +819,14 @@ class TagAdminViewSet(viewsets.ModelViewSet):
         queryset = super().get_queryset()
         search = self.request.query_params.get('search')
         category = self.request.query_params.get('category')
+        tag_name = self.request.query_params.get('tag_name')
         
         if search:
             queryset = queryset.filter(name__icontains=search)
         if category:
             queryset = queryset.filter(category_id=category)
+        if tag_name:
+            queryset = queryset.filter(tag_name_id=tag_name)
         
         return queryset
 
@@ -790,6 +848,14 @@ class TagNameAdminViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(category_id=category)
         
         return queryset
+
+
+@api_view(['GET'])
+def tags_by_tag_name(request, tag_name_id):
+    """Получение тегов по группе (TagName)"""
+    tags = Tag.objects.filter(tag_name_id=tag_name_id).order_by('name')
+    serializer = TagAdminSerializer(tags, many=True)
+    return Response(serializer.data)
 
 
 class FeatureAdminViewSet(viewsets.ModelViewSet):
@@ -821,11 +887,14 @@ class FeatureValueAdminViewSet(viewsets.ModelViewSet):
         queryset = super().get_queryset()
         search = self.request.query_params.get('search')
         category = self.request.query_params.get('category')
+        feature = self.request.query_params.get('feature')
         
         if search:
             queryset = queryset.filter(value__icontains=search)
         if category:
             queryset = queryset.filter(category_id=category)
+        if feature:
+            queryset = queryset.filter(feature_id=feature)
         
         return queryset
 
@@ -891,6 +960,7 @@ class ContactMessageAdminViewSet(viewsets.ModelViewSet):
     """Управление сообщениями от посетителей"""
     queryset = ContactMessage.objects.all().order_by('-created_at')
     serializer_class = ContactMessageAdminSerializer
+    permission_classes = [IsAuthenticated]
     lookup_field = 'pk'
     
     def get_queryset(self):
@@ -918,6 +988,57 @@ class ContactMessageAdminViewSet(viewsets.ModelViewSet):
 
 
 # ============ AUTH VIEWS ============
+
+# ============ BANNER ADMIN VIEWSET ============
+class BannerAdminViewSet(viewsets.ModelViewSet):
+    """Admin ViewSet для управления баннерами"""
+    queryset = Banner.objects.all().order_by('order')
+    serializer_class = BannerSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def create(self, request, *args, **kwargs):
+        if not request.user.is_staff:
+            return Response({'detail': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
+        return super().create(request, *args, **kwargs)
+
+    def update(self, request, *args, **kwargs):
+        if not request.user.is_staff:
+            return Response({'detail': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
+        
+        # Если явно передан image: null, удаляем старое изображение
+        if 'image' in request.data and request.data['image'] is None:
+            banner = self.get_object()
+            if banner.image:
+                banner.image.delete(save=False)
+            banner.image = None
+            banner.save()
+        
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        if not request.user.is_staff:
+            return Response({'detail': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
+        return super().destroy(request, *args, **kwargs)
+
+    @action(detail=True, methods=['post'], url_path='upload-image')
+    def upload_image(self, request, pk=None):
+        """Загрузка изображения для баннера"""
+        if not request.user.is_staff:
+            return Response({'detail': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
+        
+        banner = self.get_object()
+        image = request.FILES.get('image')
+        
+        if not image:
+            return Response({'error': 'No image provided'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        banner.image = image
+        banner.save()
+        
+        serializer = self.get_serializer(banner)
+        return Response(serializer.data)
+
 
 @api_view(['POST'])
 def admin_login(request):

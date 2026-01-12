@@ -3,8 +3,16 @@ from rest_framework import serializers
 from .models import (
     Category, Product, Image, Feature, ProductFeature, FeatureValue,
     NewsItem, AboutContent, ContactInfo, ContactMessage, Brand,
-    Tag, ProductTagGroup, TagName
+    Tag, ProductTagGroup, TagName, Banner
 )
+
+
+class BannerSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Banner
+        fields = ['id', 'title', 'description', 'image', 'link', 'order', 'is_active']
+
+
 class TagSerializer(serializers.ModelSerializer):
     class Meta:
         model = Tag
@@ -80,28 +88,35 @@ class CategorySerializer(serializers.ModelSerializer):
         return obj.get_all_products().count()
 
 class ProductListSerializer(serializers.ModelSerializer):
+    """Облегченный сериализатор для списка - минимум данных для быстрой загрузки"""
+    images = serializers.SerializerMethodField()
     main_image = serializers.SerializerMethodField()
-    category = CategorySerializer(read_only=True)
-    category_id = serializers.PrimaryKeyRelatedField(source='category', read_only=True)
-    features = ProductFeatureSerializer(many=True, read_only=True)
-    tags = TagSerializer(many=True, read_only=True)
+    category_name = serializers.CharField(source='category.name', read_only=True)
+    brand_name = serializers.CharField(source='brand.name', read_only=True, allow_null=True)
     
     class Meta:
         model = Product
         fields = [
             'id', 'name', 'slug', 'price', 'is_available',
-            'main_image', 'category', 'category_id', 'manufacturer_sku', 'internal_sku', 'features', 'tags',
-            'created_at', 'updated_at'
+            'images', 'main_image', 'category_name', 'brand_name',
+            'manufacturer_sku', 'internal_sku'
         ]
 
+    def get_images(self, obj):
+        """Только первое изображение для списка"""
+        images = list(obj.images.all())
+        if not images:
+            return []
+        main = next((img for img in images if img.is_main), images[0])
+        return [ImageSerializer(main, context=self.context).data]
+    
     def get_main_image(self, obj):
-        main_image = obj.images.filter(is_main=True).first()
-        if main_image:
-            return ImageSerializer(main_image).data
-        first_image = obj.images.first()
-        if first_image:
-            return ImageSerializer(first_image).data
-        return None
+        """Для обратной совместимости"""
+        images = list(obj.images.all())
+        if not images:
+            return None
+        main = next((img for img in images if img.is_main), images[0])
+        return ImageSerializer(main, context=self.context).data
 
 class BrandSerializer(serializers.ModelSerializer):
     # expose `image` property (frontend expects `image`) while the model field is `logo`
@@ -290,34 +305,54 @@ class BrandAdminSerializer(serializers.ModelSerializer):
 
 class TagAdminSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source='category.name', read_only=True)
+    tag_name_display = serializers.CharField(source='tag_name.name', read_only=True)
     
     class Meta:
         model = Tag
-        fields = ['id', 'name', 'slug', 'category', 'category_name']
+        fields = ['id', 'name', 'slug', 'category', 'category_name', 'tag_name', 'tag_name_display']
 
 
 class TagNameAdminSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source='category.name', read_only=True)
+    tags_count = serializers.SerializerMethodField()
+    tags = serializers.SerializerMethodField()
     
     class Meta:
         model = TagName
-        fields = ['id', 'name', 'category', 'category_name', 'created_at']
+        fields = ['id', 'name', 'category', 'category_name', 'created_at', 'tags_count', 'tags']
+    
+    def get_tags_count(self, obj):
+        return obj.tags.count()
+    
+    def get_tags(self, obj):
+        """Возвращает привязанные теги"""
+        return [{'id': t.id, 'name': t.name, 'slug': t.slug} for t in obj.tags.all()[:30]]
 
 
 class FeatureAdminSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source='category.name', read_only=True)
+    values_count = serializers.SerializerMethodField()
+    values = serializers.SerializerMethodField()
     
     class Meta:
         model = Feature
-        fields = ['id', 'name', 'category', 'category_name']
+        fields = ['id', 'name', 'category', 'category_name', 'values_count', 'values']
+    
+    def get_values_count(self, obj):
+        return obj.values.count()
+    
+    def get_values(self, obj):
+        """Возвращает привязанные значения характеристики"""
+        return [{'id': v.id, 'value': v.value} for v in obj.values.all()[:20]]
 
 
 class FeatureValueAdminSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source='category.name', read_only=True)
+    feature_name = serializers.CharField(source='feature.name', read_only=True, allow_null=True)
     
     class Meta:
         model = FeatureValue
-        fields = ['id', 'value', 'category', 'category_name']
+        fields = ['id', 'value', 'category', 'category_name', 'feature', 'feature_name']
 
 
 class NewsAdminSerializer(serializers.ModelSerializer):

@@ -21,17 +21,37 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
+# В production ОБЯЗАТЕЛЬНО установите переменную окружения SECRET_KEY!
 SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-zo(g8-19uk$1amqpb5obk!@=)fdt-=mv7n3voxe-#zhz#k!0x(')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.environ.get('DEBUG', 'False') == 'True'
+# В production установите DEBUG=False через переменные окружения
+# По умолчанию True для разработки
+DEBUG = os.environ.get('DEBUG', 'True') == 'True'
 
+# Добавьте свой домен в production
 ALLOWED_HOSTS = [
     'ncb-1.onrender.com',
     '.onrender.com',
     '127.0.0.1',
     'localhost',
+    'nargi.netlify.app',  # Фронтенд не должен быть в ALLOWED_HOSTS, только backend домен
 ]
+
+# ВАЖНО: Проверка что SECRET_KEY изменен в production
+# Эта проверка срабатывает только при DEBUG=False
+if not DEBUG and 'django-insecure' in SECRET_KEY:
+    import sys
+    print("="*60)
+    print("⚠️  КРИТИЧНАЯ ОШИБКА БЕЗОПАСНОСТИ!")
+    print("="*60)
+    print("SECRET_KEY использует небезопасное значение по умолчанию!")
+    print("Установите уникальный SECRET_KEY в переменных окружения.")
+    print()
+    print("Для генерации нового ключа выполните:")
+    print("python -c \"from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())\"")
+    print("="*60)
+    sys.exit(1)
 
 
 # Application definition
@@ -51,6 +71,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'django.middleware.gzip.GZipMiddleware',  # GZIP сжатие - первым!
     'django.middleware.security.SecurityMiddleware',
     "whitenoise.middleware.WhiteNoiseMiddleware",
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -61,15 +82,25 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
+# CORS настройки - только доверенные домены!
+# В production убедитесь что здесь только ваши настоящие домены
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://localhost:5173",
+    "http://localhost:5174",
     "http://127.0.0.1:5173",
     "http://localhost:8080",
     "https://nargi.netlify.app",
     "https://ncff.netlify.app",
     "https://ncf-puce.vercel.app",
 ]
+
+# В production можно ограничить CORS только для production доменов
+if not DEBUG:
+    CORS_ALLOWED_ORIGINS = [
+        origin for origin in CORS_ALLOWED_ORIGINS 
+        if origin.startswith('https://')
+    ]
 
 CORS_ALLOW_HEADERS = [
     'accept',
@@ -84,6 +115,15 @@ CORS_ALLOW_HEADERS = [
     'cache-control',
     'pragma',
     'expires',
+]
+
+CORS_ALLOW_METHODS = [
+    'DELETE',
+    'GET',
+    'OPTIONS',
+    'PATCH',
+    'POST',
+    'PUT',
 ]
 
 ROOT_URLCONF = 'config.urls'
@@ -153,24 +193,33 @@ REST_FRAMEWORK = {
         'rest_framework.throttling.UserRateThrottle',
     ],
     'DEFAULT_THROTTLE_RATES': {
-        'anon': '1000/hour',  # Increased for public catalog browsing
-        'user': '5000/hour',
-        'login': '5/hour',  # Keep strict for login attempts
-    }
-}
-
-# Session settings
-SESSION_COOKIE_AGE = 86400 * 7  # 7 days
-SESSION_COOKIE_HTTPONLY = True
-SESSION_COOKIE_SAMESITE = 'Lax'
-SESSION_COOKIE_SECURE = not DEBUG  # HTTPS only in production
-
-# CSRF settings for API
-CSRF_COOKIE_HTTPONLY = False
+        'anon': '1000/hour' if DEBUG else '500/hour',  # Строже в production
+        'user': '5000/hour' if DEBUG else '2000/hour',
+        'login': '5/hour',  # Защита от брутфорса
+    },
+    'EXCEPTION_HANDLER': 'rest_framework.views.exception_handler',
+}  # False для JavaScript доступа (API)
 CSRF_COOKIE_SAMESITE = 'Lax'
 CSRF_COOKIE_SECURE = not DEBUG  # HTTPS only in production
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5173",
+    "https://nargi.netlify.app",
+    "https://ncff.netlify.app",
+]
+
+# В production фильтруем только HTTPS
+if not DEBUG:
+    CSRF_TRUSTED_ORIGINS = [
+        origin for origin in CSRF_TRUSTED_ORIGINS 
+        if origin.startswith('https://')
+    ]
+
+CORS_ALLOW_ALL_ORIGINS = False  # НИКОГДА не ставьте True в production!  # HTTPS only in production
+CSRF_TRUSTED_ORIGINS = [
+    "http://localhost:5173",
+    "http://localhost:5174",
     "http://127.0.0.1:5173",
     "https://nargi.netlify.app",
     "https://ncff.netlify.app",
@@ -206,25 +255,86 @@ USE_TZ = True
 # Media files
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
-
 STATIC_URL = 'static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
-
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# Security Settings
+# Security Settings для Production
 if not DEBUG:
-    SECURE_SSL_REDIRECT = True
-    SECURE_HSTS_SECONDS = 31536000  # 1 year
+    # HTTPS Enforcement
+    SECURE_SSL_REDIRECT = True  # Автоматический редирект на HTTPS
+    SECURE_HSTS_SECONDS = 31536000  # 1 year - браузер будет использовать только HTTPS
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
-    SECURE_CONTENT_TYPE_NOSNIFF = True
-    SECURE_BROWSER_XSS_FILTER = True
-    X_FRAME_OPTIONS = 'DENY'
+    
+    # Cookie Security
+    SECURE_CONTENT_TYPE_NOSNIFF = True  # Защита от MIME-sniffing
+    SECURE_BROWSER_XSS_FILTER = True  # Защита от XSS
+    
+    # Frame Options
+    X_FRAME_OPTIONS = 'DENY'  # Защита от clickjacking
+    
+    # Proxy Settings (для Render/Heroku)
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    
+    # Cookie настройки для production
+    SESSION_COOKIE_SECURE = True  # Только HTTPS
+    CSRF_COOKIE_SECURE = True  # Только HTTPS
+    
+    # Дополнительная защита
+    SECURE_REFERRER_POLICY = 'same-origin'  # Защита от утечки информации
+else:
+    # Development settings
+    X_FRAME_OPTIONS = 'SAMEORIGIN'
+    
+# Общие настройки безопасности (всегда активны)
+SECURE_CONTENT_TYPE_NOSNIFF = True
+X_CONTENT_TYPE_OPTIONS = 'nosniff'
+
+# Password validation - строгая проверка паролей
+AUTH_PASSWORD_VALIDATORS = [
+    {
+        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
+    },
+    {
+        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
+        'OPTIONS': {
+            'min_length': 8,  # Минимум 8 символов
+        }
+    },
+    {
+        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
+    },
+    {
+        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
+    },
+]
+
+# Logging для отслеживания проблем безопасности
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'INFO' if DEBUG else 'WARNING',
+    },
+    'loggers': {
+        'django.security': {
+            'handlers': ['console'],
+            'level': 'WARNING',
+            'propagate': False,
+        },
+    },
+}
