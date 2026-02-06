@@ -200,7 +200,10 @@ def apply_product_filters(request, queryset):
     search = params.get('search')
     if search:
         queryset = queryset.filter(
-            Q(name__icontains=search) | Q(description__icontains=search)
+            Q(name__icontains=search) | 
+            Q(description__icontains=search) |
+            Q(manufacturer_sku__icontains=search) |
+            Q(internal_sku__icontains=search)
         )
 
     # --- фильтр по характеристикам ---
