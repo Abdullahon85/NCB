@@ -80,36 +80,70 @@ def admin_logout(request):
 # ============ EXISTING VIEWS ============
 @api_view(['GET'])
 def features_tags_by_category(request):
-    category_id = request.GET.get('category')
-    feature_id = request.GET.get('feature')  # Для фильтрации значений по характеристике
-    
-    features = Feature.objects.filter(category_id=category_id)
-    tags = Tag.objects.filter(category_id=category_id)
-    tag_names = TagName.objects.filter(category_id=category_id).prefetch_related('tags')
-    
-    # Фильтруем значения - либо по feature_id, либо по category_id
-    if feature_id:
-        feature_values = FeatureValue.objects.filter(feature_id=feature_id)
-    else:
+    """Get features, tags, and feature values for a specific category"""
+    try:
+        category_id = request.GET.get('category')
+        
+        if not category_id:
+            return JsonResponse({'error': 'category parameter is required'}, status=400)
+        
+        # Get all features with their values for this category
+        features = Feature.objects.filter(category_id=category_id).prefetch_related('values')
+        
+        # Get all tags for this category
+        tags = Tag.objects.filter(category_id=category_id).select_related('tag_name')
+        
+        # Get all tag names/groups for this category  
+        tag_names = TagName.objects.filter(category_id=category_id).prefetch_related('tags')
+        
+        # Get all feature values for this category
         feature_values = FeatureValue.objects.filter(category_id=category_id)
-    
-    features_data = list(features.values('id', 'name'))
-    tags_data = list(tags.values('id', 'name', 'tag_name'))
-    # Включаем связанные теги для каждого TagName
-    tag_names_data = []
-    for tn in tag_names:
-        tag_names_data.append({
-            'id': tn.id,
-            'name': tn.name,
-            'tags': [{'id': t.id, 'name': t.name} for t in tn.tags.all()]
+        
+        # Build features data with their values
+        features_data = []
+        for feature in features:
+            feature_dict = {
+                'id': feature.id,
+                'name': feature.name,
+                'values': [{'id': v.id, 'value': v.value} for v in feature.values.all()]
+            }
+            features_data.append(feature_dict)
+        
+        # Build tags data
+        tags_data = []
+        for tag in tags:
+            tag_dict = {
+                'id': tag.id,
+                'name': tag.name,
+                'tag_name_id': tag.tag_name_id,
+                'tag_name_name': tag.tag_name.name if tag.tag_name else None
+            }
+            tags_data.append(tag_dict)
+        
+        # Build tag names data with their tags
+        tag_names_data = []
+        for tn in tag_names:
+            tn_dict = {
+                'id': tn.id,
+                'name': tn.name,
+                'tags': [{'id': t.id, 'name': t.name} for t in tn.tags.all()]
+            }
+            tag_names_data.append(tn_dict)
+        
+        # Build feature values data
+        feature_values_data = list(feature_values.values('id', 'value', 'category_id'))
+        
+        return JsonResponse({
+            'features': features_data,
+            'tags': tags_data,
+            'tag_names': tag_names_data,
+            'feature_values': feature_values_data
         })
-    feature_values_data = list(feature_values.values('id', 'value', 'feature_id', 'feature__name'))
-    return JsonResponse({
-        'features': features_data,
-        'tags': tags_data,
-        'tag_names': tag_names_data,
-        'feature_values': feature_values_data
-    })
+    except Exception as e:
+        import logging
+        import traceback
+        logging.error(f"Error in features_tags_by_category: {str(e)}\n{traceback.format_exc()}")
+        return JsonResponse({'error': f'Server error: {str(e)}'}, status=500)
 
 
 @api_view(['GET'])
@@ -119,8 +153,15 @@ def feature_values_by_feature(request):
     if not feature_id:
         return JsonResponse({'error': 'feature_id is required'}, status=400)
     
-    values = FeatureValue.objects.filter(feature_id=feature_id).values('id', 'value')
-    return JsonResponse({'values': list(values)})
+    try:
+        # Get the feature and retrieve its values through ManyToMany relationship
+        feature = Feature.objects.prefetch_related('values').get(id=feature_id)
+        values = feature.values.all().values('id', 'value')
+        return JsonResponse({'values': list(values)})
+    except Feature.DoesNotExist:
+        return JsonResponse({'error': 'Feature not found'}, status=404)
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
 class TagViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Tag.objects.all().order_by('name')
     serializer_class = TagSerializer
@@ -130,18 +171,7 @@ class TagViewSet(viewsets.ReadOnlyModelViewSet):
         tags = Tag.objects.annotate(count=Count('producttaggroup')).order_by('-count')
         data = [{'id': t.id, 'name': t.name, 'slug': t.slug, 'count': t.count} for t in tags]
         return Response(data)
-    @api_view(['GET'])
-    def features_tags_by_category(request):
-        category_id = request.GET.get('category')
-        features = Feature.objects.filter(category_id=category_id)
-        tags = Tag.objects.filter(category_id=category_id)
-        features_data = list(features.values('id', 'name'))
-        tags_data = list(tags.values('id', 'name'))
-        return JsonResponse({
-            'features': features_data,
-            'tags': tags_data
-        })
-        return JsonResponse({'tags': tags_data})
+
 
 @api_view(['GET'])
 def products_by_feature_value(request):
@@ -863,9 +893,11 @@ def tags_by_tag_name(request, tag_name_id):
 
 class FeatureAdminViewSet(viewsets.ModelViewSet):
     """CRUD для характеристик (админка)"""
-    queryset = Feature.objects.all().order_by('name')
+    queryset = Feature.objects.select_related('category').prefetch_related('values').order_by('name')
     serializer_class = FeatureAdminSerializer
     lookup_field = 'pk'
+    pagination_class = StandardResultsSetPagination
+    permission_classes = [IsAuthenticated]
     
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -878,13 +910,30 @@ class FeatureAdminViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(category_id=category)
         
         return queryset
+    
+    @action(detail=False, methods=['get'])
+    def debug_first(self, request):
+        """Debug action to show first feature with all details"""
+        try:
+            feature = Feature.objects.select_related('category').prefetch_related('values').first()
+            if feature:
+                serializer = self.get_serializer(feature)
+                return Response({
+                    'feature': serializer.data,
+                    'raw_values': [{'id': v.id, 'value': v.value} for v in feature.values.all()]
+                })
+            return Response({'error': 'No features found'}, status=404)
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
 
 
 class FeatureValueAdminViewSet(viewsets.ModelViewSet):
     """CRUD для значений характеристик (админка)"""
-    queryset = FeatureValue.objects.all().order_by('value')
+    queryset = FeatureValue.objects.select_related('category').prefetch_related('features').order_by('value')
     serializer_class = FeatureValueAdminSerializer
     lookup_field = 'pk'
+    pagination_class = StandardResultsSetPagination
+    permission_classes = [IsAuthenticated]
     
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -897,7 +946,8 @@ class FeatureValueAdminViewSet(viewsets.ModelViewSet):
         if category:
             queryset = queryset.filter(category_id=category)
         if feature:
-            queryset = queryset.filter(feature_id=feature)
+            # Фильтруем значения, привязанные к указанной характеристике
+            queryset = queryset.filter(features__id=feature).distinct()
         
         return queryset
 

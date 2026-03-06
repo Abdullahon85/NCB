@@ -101,17 +101,6 @@ class Product(models.Model):
     def __str__(self):
         return self.name
 
-class Feature(models.Model):
-    name = models.CharField(max_length=200, unique=True, verbose_name='Название характеристики')
-    category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name='feature',verbose_name='Категория')
-    class Meta:
-        verbose_name = 'Характеристика'
-        verbose_name_plural = 'Характеристики'
-
-    def __str__(self):
-        return self.name
-
-
 class FeatureValue(models.Model):
     """Модель для значений характеристик"""
     category = models.ForeignKey(
@@ -122,25 +111,36 @@ class FeatureValue(models.Model):
         null=True,
         blank=True
     )
-    feature = models.ForeignKey(
-        Feature,
-        on_delete=models.CASCADE,
-        related_name='values',
-        verbose_name='Характеристика',
-        null=True,
-        blank=True
-    )
     value = models.CharField(max_length=500, verbose_name='Значение')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         verbose_name = 'Значение характеристики'
         verbose_name_plural = 'Значения характеристик'
-        unique_together = ['feature', 'value']
+        unique_together = ['category', 'value']  # Уникальность в рамках категории
         ordering = ['value']
 
     def __str__(self):
         return self.value
+
+
+class Feature(models.Model):
+    name = models.CharField(max_length=200, verbose_name='Название характеристики')
+    category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name='feature', verbose_name='Категория')
+    values = models.ManyToManyField(
+        FeatureValue, 
+        related_name='features', 
+        blank=True,
+        verbose_name='Значения'
+    )
+    
+    class Meta:
+        verbose_name = 'Характеристика'
+        verbose_name_plural = 'Характеристики'
+        unique_together = [['name', 'category']]  # Уникальность в рамках категории
+
+    def __str__(self):
+        return f"{self.name} ({self.category.name})"
 
 
 class ProductFeature(models.Model):

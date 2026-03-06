@@ -333,10 +333,49 @@ class FeatureAdminSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source='category.name', read_only=True)
     values_count = serializers.SerializerMethodField()
     values = serializers.SerializerMethodField()
+    value_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        write_only=True,
+        required=False,
+        allow_empty=True
+    )
     
     class Meta:
         model = Feature
-        fields = ['id', 'name', 'category', 'category_name', 'values_count', 'values']
+        fields = ['id', 'name', 'category', 'category_name', 'values_count', 'values', 'value_ids']
+    
+    def validate(self, data):
+        """Проверка уникальности названия характеристики в рамках категории"""
+        name = data.get('name')
+        category = data.get('category')
+        
+        # При обновлении исключаем текущий объект из проверки
+        instance = self.instance
+        queryset = Feature.objects.filter(name=name, category=category)
+        
+        if instance:
+            queryset = queryset.exclude(pk=instance.pk)
+        
+        if queryset.exists():
+            raise serializers.ValidationError({
+                'name': f'Характеристика "{name}" уже существует в категории "{category.name}"'
+            })
+        
+        return data
+    
+    def create(self, validated_data):
+        value_ids = validated_data.pop('value_ids', [])
+        feature = Feature.objects.create(**validated_data)
+        if value_ids:
+            feature.values.set(value_ids)
+        return feature
+    
+    def update(self, instance, validated_data):
+        value_ids = validated_data.pop('value_ids', None)
+        instance = super().update(instance, validated_data)
+        if value_ids is not None:
+            instance.values.set(value_ids)
+        return instance
     
     def get_values_count(self, obj):
         return obj.values.count()
@@ -348,11 +387,15 @@ class FeatureAdminSerializer(serializers.ModelSerializer):
 
 class FeatureValueAdminSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source='category.name', read_only=True)
-    feature_name = serializers.CharField(source='feature.name', read_only=True, allow_null=True)
+    features_info = serializers.SerializerMethodField()
     
     class Meta:
         model = FeatureValue
-        fields = ['id', 'value', 'category', 'category_name', 'feature', 'feature_name']
+        fields = ['id', 'value', 'category', 'category_name', 'features_info']
+    
+    def get_features_info(self, obj):
+        """Возвращает список привязанных характеристик"""
+        return [{'id': f.id, 'name': f.name} for f in obj.features.all()]
 
 
 class NewsAdminSerializer(serializers.ModelSerializer):
