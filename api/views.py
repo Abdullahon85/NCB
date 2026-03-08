@@ -489,19 +489,42 @@ class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
             category = self.get_object()
         except Http404:
             return Response({'error': 'Категория не найдена'}, status=404)
-        
+
         products = category.get_all_products()
+
+        # Apply price filter if provided
+        price_min = request.query_params.get('price_min')
+        price_max = request.query_params.get('price_max')
+        if price_min:
+            try:
+                products = products.filter(price__gte=float(price_min))
+            except ValueError:
+                pass
+        if price_max:
+            try:
+                products = products.filter(price__lte=float(price_max))
+            except ValueError:
+                pass
+
+        # Count products per tag (using the related_name 'producttaggroup_tags')
+        tag_counts_qs = Tag.objects.filter(
+            producttaggroup_tags__product__in=products
+        ).annotate(
+            product_count=Count('producttaggroup_tags__product', distinct=True)
+        ).values('id', 'product_count')
+        tag_count_map = {item['id']: item['product_count'] for item in tag_counts_qs}
+
         tag_groups = ProductTagGroup.objects.filter(
             product__in=products
-        ).prefetch_related('tags').distinct()
-        
+        ).prefetch_related('tags').select_related('group_name').distinct()
+
         grouped_data = {}
-        
+
         for group in tag_groups:
             tag_name_obj = group.group_name
             if not tag_name_obj:
                 continue
-            
+
             # Use TagName id as key, extract name for display
             key = tag_name_obj.id
             if key not in grouped_data:
@@ -510,14 +533,16 @@ class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
                     'group_name': tag_name_obj.name,
                     'tags': {}
                 }
-            
+
             for tag in group.tags.all():
-                grouped_data[key]['tags'][tag.id] = {
-                    'id': tag.id,
-                    'name': tag.name,
-                    'slug': tag.slug
-                }
-        
+                if tag.id not in grouped_data[key]['tags']:
+                    grouped_data[key]['tags'][tag.id] = {
+                        'id': tag.id,
+                        'name': tag.name,
+                        'slug': tag.slug,
+                        'product_count': tag_count_map.get(tag.id, 0)
+                    }
+
         result = [
             {
                 'id': data['id'],
@@ -526,7 +551,7 @@ class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
             }
             for data in grouped_data.values()
         ]
-        
+
         return Response(result)
 
 
