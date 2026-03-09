@@ -3,7 +3,7 @@ from rest_framework import serializers
 from .models import (
     Category, Product, Image, Feature, ProductFeature, FeatureValue,
     NewsItem, AboutContent, ContactInfo, ContactMessage, Brand,
-    Tag, ProductTagGroup, TagName, Banner
+    Tag, ProductTagGroup, TagName, Banner, Order, OrderItem
 )
 
 
@@ -461,3 +461,34 @@ class UpdateProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ['email', 'first_name', 'last_name']
+
+
+class OrderItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OrderItem
+        fields = ['product', 'product_name', 'product_sku', 'price', 'quantity']
+
+
+class OrderSerializer(serializers.ModelSerializer):
+    items = OrderItemSerializer(many=True)
+
+    class Meta:
+        model = Order
+        fields = [
+            'id', 'customer_name', 'customer_phone', 'customer_email',
+            'comment', 'status', 'created_at', 'items'
+        ]
+        read_only_fields = ['id', 'status', 'created_at']
+
+    def create(self, validated_data):
+        items_data = validated_data.pop('items')
+        order = Order.objects.create(**validated_data)
+        for item_data in items_data:
+            OrderItem.objects.create(order=order, **item_data)
+        return order
+
+
+class OrderAdminSerializer(OrderSerializer):
+    """Сериализатор для администратора - включает статус"""
+    class Meta(OrderSerializer.Meta):
+        read_only_fields = ['id', 'created_at']

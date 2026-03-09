@@ -2,7 +2,8 @@
 from django.contrib import admin
 from .models import (
     Tag, Category, Product, Image, Feature, ProductFeature, TagName, FeatureValue,
-    NewsItem, AboutContent, ContactInfo, ContactMessage, Brand, ProductTagGroup, Banner
+    NewsItem, AboutContent, ContactInfo, ContactMessage, Brand, ProductTagGroup, Banner,
+    Order, OrderItem
 )
 from django import forms
 
@@ -188,3 +189,26 @@ class BannerAdmin(admin.ModelAdmin):
     list_editable = ['order', 'is_active']
     search_fields = ['title', 'description']
     ordering = ['order']
+
+
+class OrderItemInline(admin.TabularInline):
+    model = OrderItem
+    extra = 0
+    readonly_fields = ['product', 'product_name', 'product_sku', 'price', 'quantity']
+    can_delete = False
+
+
+@admin.register(Order)
+class OrderAdmin(admin.ModelAdmin):
+    list_display = ['id', 'customer_name', 'customer_phone', 'customer_email', 'status', 'items_count', 'created_at']
+    list_filter = ['status', 'created_at']
+    search_fields = ['customer_name', 'customer_phone', 'customer_email']
+    readonly_fields = ['customer_name', 'customer_phone', 'customer_email', 'comment', 'created_at']
+    list_editable = ['status']
+    date_hierarchy = 'created_at'
+    inlines = [OrderItemInline]
+    ordering = ['-created_at']
+
+    @admin.display(description='Позиций')
+    def items_count(self, obj):
+        return obj.items.count()

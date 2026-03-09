@@ -19,13 +19,13 @@ from .filters import BrandFilter
 from .pagination import StandardResultsSetPagination
 from .models import (
     Category, Product, NewsItem, AboutContent,
-    ContactInfo, ContactMessage, Brand, ProductFeature, Tag, Feature, ProductTagGroup, TagName, FeatureValue, Image, Banner
+    ContactInfo, ContactMessage, Brand, ProductFeature, Tag, Feature, ProductTagGroup, TagName, FeatureValue, Image, Banner, Order, OrderItem
 )
 from .serializers import (
     CategorySerializer, ProductListSerializer, ProductDetailSerializer,
     NewsItemSerializer, NewsDetailSerializer, AboutContentSerializer,
     ContactInfoSerializer, ContactMessageSerializer, BrandSerializer, TagSerializer,
-    ProductTagGroupSerializer, BannerSerializer
+    ProductTagGroupSerializer, BannerSerializer, OrderSerializer, OrderAdminSerializer
 )
 
 # ============ JWT AUTH VIEWS ============
@@ -1224,5 +1224,27 @@ def admin_stats(request):
         'available_products': Product.objects.filter(is_available=True).count(),
         'tags_count': Tag.objects.count(),
         'features_count': Feature.objects.count(),
+        'orders_count': Order.objects.count(),
+        'new_orders_count': Order.objects.filter(status='new').count(),
     }
     return Response(stats)
+
+
+# ============ ORDERS ============
+
+class OrderViewSet(viewsets.ModelViewSet):
+    """Публичный endpoint для создания заказов.
+    Только POST (create) разрешён анонимным пользователям.
+    GET/PATCH/DELETE требуют авторизации (только для админа).
+    """
+    queryset = Order.objects.prefetch_related('items').order_by('-created_at')
+
+    def get_serializer_class(self):
+        if self.request.user and self.request.user.is_authenticated:
+            return OrderAdminSerializer
+        return OrderSerializer
+
+    def get_permissions(self):
+        if self.action == 'create':
+            return [AllowAny()]
+        return [IsAuthenticated()]

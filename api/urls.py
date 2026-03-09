@@ -11,6 +11,7 @@ from .views import (
     BrandViewSet,
     TagViewSet,
     BannerViewSet,
+    OrderViewSet,
     features_tags_by_category,
     feature_values_by_feature,
     tags_by_tag_name,
@@ -47,6 +48,7 @@ router.register(r'news', NewsViewSet)
 router.register(r'brands', BrandViewSet, basename='brand')
 router.register(r'tags', TagViewSet, basename='tag')
 router.register(r'banners', BannerViewSet, basename='banner')
+router.register(r'orders', OrderViewSet, basename='order')
 
 # Admin endpoints
 router.register(r'admin/products', ProductAdminViewSet, basename='admin-products')
