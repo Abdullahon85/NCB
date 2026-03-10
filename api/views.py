@@ -146,7 +146,7 @@ def features_tags_by_category(request):
         import logging
         import traceback
         logging.error(f"Error in features_tags_by_category: {str(e)}\n{traceback.format_exc()}")
-        return JsonResponse({'error': f'Server error: {str(e)}'}, status=500)
+        return JsonResponse({'error': 'Internal server error'}, status=500)
 
 
 @api_view(['GET'])
@@ -285,20 +285,18 @@ def apply_product_filters(request, queryset):
 
 
 
-class ProductViewSet(viewsets.ModelViewSet):
+class ProductViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Product.objects.all()
     lookup_field = 'slug'
     pagination_class = StandardResultsSetPagination
 
     def get_queryset(self):
         queryset = Product.objects.all()
-        # Don't apply filters for admin operations
-        if self.action not in ['create', 'update', 'partial_update', 'destroy']:
-            queryset = apply_product_filters(self.request, queryset)
+        queryset = apply_product_filters(self.request, queryset)
         return queryset
 
     def get_serializer_class(self):
-        if self.action in ['retrieve', 'create', 'update', 'partial_update']:
+        if self.action == 'retrieve':
             return ProductDetailSerializer
         return ProductListSerializer
 
@@ -335,6 +333,9 @@ class ProductViewSet(viewsets.ModelViewSet):
             return Response({'error': 'No images provided'}, status=status.HTTP_400_BAD_REQUEST)
         
         for file in files:
+            is_valid, error_msg = validate_uploaded_image(file)
+            if not is_valid:
+                return Response({'error': error_msg}, status=status.HTTP_400_BAD_REQUEST)
             image = Image.objects.create(product=product, image=file)
             uploaded_images.append({'id': image.id, 'image': image.image.url})
         
@@ -634,6 +635,24 @@ from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.models import User
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 
+# === Security: File upload validation ===
+import mimetypes
+
+ALLOWED_IMAGE_TYPES = {'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml'}
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
+
+def validate_uploaded_image(file):
+    """Validate uploaded file is a safe image within size limits."""
+    if file.size > MAX_UPLOAD_SIZE:
+        return False, f'File too large. Maximum size is {MAX_UPLOAD_SIZE // (1024*1024)}MB.'
+    content_type = getattr(file, 'content_type', '')
+    if content_type not in ALLOWED_IMAGE_TYPES:
+        ext = file.name.rsplit('.', 1)[-1].lower() if '.' in file.name else ''
+        guessed_type, _ = mimetypes.guess_type(f'file.{ext}')
+        if guessed_type not in ALLOWED_IMAGE_TYPES:
+            return False, 'Invalid file type. Only JPEG, PNG, GIF, WebP, SVG images are allowed.'
+    return True, None
+
 
 class ProductAdminViewSet(viewsets.ModelViewSet):
     """CRUD для товаров (админка) с поддержкой inline изображений, характеристик и групп тегов"""
@@ -641,6 +660,7 @@ class ProductAdminViewSet(viewsets.ModelViewSet):
     serializer_class = ProductAdminSerializer
     lookup_field = 'pk'
     pagination_class = StandardResultsSetPagination
+    permission_classes = [IsAdminUser]
     
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -796,6 +816,9 @@ class ProductAdminViewSet(viewsets.ModelViewSet):
         
         uploaded = []
         for f in files:
+            is_valid, error_msg = validate_uploaded_image(f)
+            if not is_valid:
+                return Response({'error': error_msg}, status=400)
             img = Image.objects.create(product=product, image=f)
             uploaded.append({'id': img.id, 'image': img.image.url if img.image else None})
         
@@ -817,6 +840,7 @@ class CategoryAdminViewSet(viewsets.ModelViewSet):
     queryset = Category.objects.all().order_by('order', 'name')
     serializer_class = CategoryAdminSerializer
     lookup_field = 'pk'
+    permission_classes = [IsAdminUser]
     
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -838,6 +862,9 @@ class CategoryAdminViewSet(viewsets.ModelViewSet):
         category = self.get_object()
         image = request.FILES.get('image')
         if image:
+            is_valid, error_msg = validate_uploaded_image(image)
+            if not is_valid:
+                return Response({'error': error_msg}, status=400)
             category.image = image
             category.save()
             return Response({'image': category.image.url if category.image else None})
@@ -849,6 +876,7 @@ class BrandAdminViewSet(viewsets.ModelViewSet):
     queryset = Brand.objects.all().order_by('name')
     serializer_class = BrandAdminSerializer
     lookup_field = 'pk'
+    permission_classes = [IsAdminUser]
     
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -864,6 +892,9 @@ class BrandAdminViewSet(viewsets.ModelViewSet):
         brand = self.get_object()
         logo = request.FILES.get('logo')
         if logo:
+            is_valid, error_msg = validate_uploaded_image(logo)
+            if not is_valid:
+                return Response({'error': error_msg}, status=400)
             brand.logo = logo
             brand.save()
             return Response({'logo': brand.logo.url if brand.logo else None})
@@ -875,6 +906,7 @@ class TagAdminViewSet(viewsets.ModelViewSet):
     queryset = Tag.objects.all().order_by('name')
     serializer_class = TagAdminSerializer
     lookup_field = 'pk'
+    permission_classes = [IsAdminUser]
     
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -897,6 +929,7 @@ class TagNameAdminViewSet(viewsets.ModelViewSet):
     queryset = TagName.objects.all().order_by('name')
     serializer_class = TagNameAdminSerializer
     lookup_field = 'pk'
+    permission_classes = [IsAdminUser]
     
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -912,6 +945,7 @@ class TagNameAdminViewSet(viewsets.ModelViewSet):
 
 
 @api_view(['GET'])
+@permission_classes([IsAdminUser])
 def tags_by_tag_name(request, tag_name_id):
     """Получение тегов по группе (TagName)"""
     tags = Tag.objects.filter(tag_name_id=tag_name_id).order_by('name')
@@ -925,7 +959,7 @@ class FeatureAdminViewSet(viewsets.ModelViewSet):
     serializer_class = FeatureAdminSerializer
     lookup_field = 'pk'
     pagination_class = StandardResultsSetPagination
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminUser]
     
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -961,7 +995,7 @@ class FeatureValueAdminViewSet(viewsets.ModelViewSet):
     serializer_class = FeatureValueAdminSerializer
     lookup_field = 'pk'
     pagination_class = StandardResultsSetPagination
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminUser]
     
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -985,6 +1019,7 @@ class NewsAdminViewSet(viewsets.ModelViewSet):
     queryset = NewsItem.objects.all().order_by('-pub_date')
     serializer_class = NewsAdminSerializer
     lookup_field = 'pk'
+    permission_classes = [IsAdminUser]
     
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -1006,6 +1041,7 @@ class ImageAdminViewSet(viewsets.ModelViewSet):
     queryset = Image.objects.all().order_by('order')
     serializer_class = ImageAdminSerializer
     lookup_field = 'pk'
+    permission_classes = [IsAdminUser]
     
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -1018,6 +1054,7 @@ class ImageAdminViewSet(viewsets.ModelViewSet):
 class AboutContentAdminView(generics.RetrieveUpdateAPIView):
     """Получение и обновление страницы О нас"""
     serializer_class = AboutContentAdminSerializer
+    permission_classes = [IsAdminUser]
     
     def get_object(self):
         obj = AboutContent.objects.first()
@@ -1029,6 +1066,7 @@ class AboutContentAdminView(generics.RetrieveUpdateAPIView):
 class ContactInfoAdminView(generics.RetrieveUpdateAPIView):
     """Получение и обновление контактной информации"""
     serializer_class = ContactInfoAdminSerializer
+    permission_classes = [IsAdminUser]
     
     def get_object(self):
         obj = ContactInfo.objects.first()
@@ -1041,7 +1079,7 @@ class ContactMessageAdminViewSet(viewsets.ModelViewSet):
     """Управление сообщениями от посетителей"""
     queryset = ContactMessage.objects.all().order_by('-created_at')
     serializer_class = ContactMessageAdminSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminUser]
     lookup_field = 'pk'
     
     def get_queryset(self):
@@ -1075,17 +1113,10 @@ class BannerAdminViewSet(viewsets.ModelViewSet):
     """Admin ViewSet для управления баннерами"""
     queryset = Banner.objects.all().order_by('order')
     serializer_class = BannerSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminUser]
     pagination_class = None
 
-    def create(self, request, *args, **kwargs):
-        if not request.user.is_staff:
-            return Response({'detail': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
-        return super().create(request, *args, **kwargs)
-
     def update(self, request, *args, **kwargs):
-        if not request.user.is_staff:
-            return Response({'detail': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
         
         # Если явно передан image: null, удаляем старое изображение
         if 'image' in request.data and request.data['image'] is None:
@@ -1098,21 +1129,20 @@ class BannerAdminViewSet(viewsets.ModelViewSet):
         return super().update(request, *args, **kwargs)
 
     def destroy(self, request, *args, **kwargs):
-        if not request.user.is_staff:
-            return Response({'detail': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
         return super().destroy(request, *args, **kwargs)
 
     @action(detail=True, methods=['post'], url_path='upload-image')
     def upload_image(self, request, pk=None):
         """Загрузка изображения для баннера"""
-        if not request.user.is_staff:
-            return Response({'detail': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
-        
         banner = self.get_object()
         image = request.FILES.get('image')
         
         if not image:
             return Response({'error': 'No image provided'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        is_valid, error_msg = validate_uploaded_image(image)
+        if not is_valid:
+            return Response({'error': error_msg}, status=status.HTTP_400_BAD_REQUEST)
         
         banner.image = image
         banner.save()
@@ -1250,7 +1280,7 @@ class OrderViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action == 'create':
             return [AllowAny()]
-        return [IsAuthenticated()]
+        return [IsAdminUser()]
 
 
 # ============ REVIEWS & QUESTIONS ============
@@ -1324,7 +1354,7 @@ class ReviewAdminViewSet(viewsets.ModelViewSet):
     """Управление отзывами о товарах"""
     queryset = ProductReview.objects.select_related('product').order_by('-created_at')
     serializer_class = ProductReviewAdminSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminUser]
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -1356,7 +1386,7 @@ class QuestionAdminViewSet(viewsets.ModelViewSet):
     """Управление вопросами о товарах"""
     queryset = ProductQuestion.objects.select_related('product').order_by('-created_at')
     serializer_class = ProductQuestionAdminSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminUser]
 
     def get_queryset(self):
         queryset = super().get_queryset()

@@ -32,10 +32,8 @@ DEBUG = os.environ.get('DEBUG', 'True') == 'True'
 # Добавьте свой домен в production
 ALLOWED_HOSTS = [
     'ncb-1.onrender.com',
-    '.onrender.com',
     '127.0.0.1',
     'localhost',
-    'nargi.netlify.app',  # Фронтенд не должен быть в ALLOWED_HOSTS, только backend домен
 ]
 
 # ВАЖНО: Проверка что SECRET_KEY изменен в production
@@ -67,6 +65,7 @@ INSTALLED_APPS = [
     'api',
     'rest_framework',
     'rest_framework_simplejwt',
+    'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
 ]
 
@@ -201,6 +200,7 @@ REST_FRAMEWORK = {
 }  # False для JavaScript доступа (API)
 CSRF_COOKIE_SAMESITE = 'Lax'
 CSRF_COOKIE_SECURE = not DEBUG  # HTTPS only in production
+CSRF_COOKIE_HTTPONLY = False  # JS needs to read CSRF token for API calls
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:5173",
     "http://localhost:5174",
@@ -216,16 +216,7 @@ if not DEBUG:
         if origin.startswith('https://')
     ]
 
-CORS_ALLOW_ALL_ORIGINS = False  # НИКОГДА не ставьте True в production!  # HTTPS only in production
-CSRF_TRUSTED_ORIGINS = [
-    "http://localhost:5173",
-    "http://localhost:5174",
-    "http://127.0.0.1:5173",
-    "https://nargi.netlify.app",
-    "https://ncff.netlify.app",
-]
-
-CORS_ALLOW_ALL_ORIGINS = False
+CORS_ALLOW_ALL_ORIGINS = False  # НИКОГДА не ставьте True в production!
 CORS_ALLOW_CREDENTIALS = True
 
 # JWT Settings
@@ -235,7 +226,7 @@ SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=15),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
     'ROTATE_REFRESH_TOKENS': True,
-    'BLACKLIST_AFTER_ROTATION': False,
+    'BLACKLIST_AFTER_ROTATION': True,
     'ALGORITHM': 'HS256',
     'SIGNING_KEY': SECRET_KEY,
     'AUTH_HEADER_TYPES': ('Bearer',),
@@ -297,6 +288,18 @@ else:
 # Общие настройки безопасности (всегда активны)
 SECURE_CONTENT_TYPE_NOSNIFF = True
 X_CONTENT_TYPE_OPTIONS = 'nosniff'
+
+# Ограничение размера загружаемых данных (10MB)
+DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024
+FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024
+
+# Ограничение количества полей в POST запросе (защита от HashDoS)
+DATA_UPLOAD_MAX_NUMBER_FIELDS = 1000
+
+# Session security
+SESSION_COOKIE_HTTPONLY = True  # JS не может читать session cookie
+SESSION_COOKIE_AGE = 3600  # 1 час
+SESSION_EXPIRE_AT_BROWSER_CLOSE = True
 
 # Password validation - строгая проверка паролей
 AUTH_PASSWORD_VALIDATORS = [

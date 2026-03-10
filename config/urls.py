@@ -6,7 +6,7 @@ from django.conf.urls.static import static
 
 
 urlpatterns = [
-    path('admin/', admin.site.urls),
+    path('dashboard-ctrl-panel/', admin.site.urls),
     path('api/', include('api.urls')),
     path('meta.json', TemplateView.as_view(template_name='meta.json', content_type='application/json')),
 ]
