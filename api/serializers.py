@@ -3,7 +3,8 @@ from rest_framework import serializers
 from .models import (
     Category, Product, Image, Feature, ProductFeature, FeatureValue,
     NewsItem, AboutContent, ContactInfo, ContactMessage, Brand,
-    Tag, ProductTagGroup, TagName, Banner, Order, OrderItem
+    Tag, ProductTagGroup, TagName, Banner, Order, OrderItem,
+    ProductReview, ProductQuestion
 )
 
 
@@ -203,6 +204,22 @@ class ContactMessageSerializer(serializers.ModelSerializer):
     class Meta:
         model = ContactMessage
         fields = ['name', 'email', 'message']
+
+
+class ProductReviewSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProductReview
+        fields = ['id', 'product', 'author_name', 'rating', 'text',
+                  'created_at', 'is_published', 'admin_reply', 'admin_reply_date']
+        read_only_fields = ['id', 'created_at', 'is_published', 'admin_reply', 'admin_reply_date', 'product']
+
+
+class ProductQuestionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProductQuestion
+        fields = ['id', 'product', 'author_name', 'text',
+                  'created_at', 'is_published', 'admin_reply', 'admin_reply_date']
+        read_only_fields = ['id', 'created_at', 'is_published', 'admin_reply', 'admin_reply_date', 'product']
 
 
 # ============ ADMIN SERIALIZERS ============
@@ -417,6 +434,26 @@ class ContactInfoAdminSerializer(serializers.ModelSerializer):
         model = ContactInfo
         fields = ['id', 'phone', 'email', 'address', 'map_url', 'updated_at']
         read_only_fields = ['updated_at']
+
+
+class ProductReviewAdminSerializer(serializers.ModelSerializer):
+    product_name = serializers.CharField(source='product.name', read_only=True)
+
+    class Meta:
+        model = ProductReview
+        fields = ['id', 'product', 'product_name', 'author_name', 'rating', 'text',
+                  'created_at', 'is_published', 'admin_reply', 'admin_reply_date']
+        read_only_fields = ['id', 'created_at']
+
+
+class ProductQuestionAdminSerializer(serializers.ModelSerializer):
+    product_name = serializers.CharField(source='product.name', read_only=True)
+
+    class Meta:
+        model = ProductQuestion
+        fields = ['id', 'product', 'product_name', 'author_name', 'text',
+                  'created_at', 'is_published', 'admin_reply', 'admin_reply_date']
+        read_only_fields = ['id', 'created_at']
 
 
 class ContactMessageAdminSerializer(serializers.ModelSerializer):

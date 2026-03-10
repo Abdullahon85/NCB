@@ -413,7 +413,7 @@ class OrderItem(models.Model):
 
 class Banner(models.Model):
     """Баннер для слайдера на главной странице"""
-    title = models.CharField(max_length=200, verbose_name='Заголовок')
+    title = models.CharField(max_length=200, blank=True, null=True, verbose_name='Заголовок')
     description = models.TextField(blank=True, null=True, verbose_name='Описание')
     image = models.ImageField(upload_to='banners/', blank=True, null=True, verbose_name='Изображение')
     link = models.CharField(max_length=500, blank=True, null=True, verbose_name='Ссылка')
@@ -429,3 +429,47 @@ class Banner(models.Model):
 
     def __str__(self):
         return self.title
+
+
+class ProductReview(models.Model):
+    product = models.ForeignKey(
+        Product, on_delete=models.CASCADE, related_name='reviews', verbose_name='Товар'
+    )
+    author_name = models.CharField(max_length=150, verbose_name='Имя автора')
+    rating = models.PositiveSmallIntegerField(
+        verbose_name='Оценка',
+        choices=[(i, str(i)) for i in range(1, 6)]
+    )
+    text = models.TextField(verbose_name='Текст отзыва')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Дата')
+    is_published = models.BooleanField(default=True, verbose_name='Опубликован')
+    admin_reply = models.TextField(blank=True, verbose_name='Ответ администратора')
+    admin_reply_date = models.DateTimeField(null=True, blank=True, verbose_name='Дата ответа')
+
+    class Meta:
+        verbose_name = 'Отзыв'
+        verbose_name_plural = 'Отзывы'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'Отзыв от {self.author_name} на {self.product.name}'
+
+
+class ProductQuestion(models.Model):
+    product = models.ForeignKey(
+        Product, on_delete=models.CASCADE, related_name='questions', verbose_name='Товар'
+    )
+    author_name = models.CharField(max_length=150, verbose_name='Имя автора')
+    text = models.TextField(verbose_name='Текст вопроса')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Дата')
+    is_published = models.BooleanField(default=True, verbose_name='Опубликован')
+    admin_reply = models.TextField(blank=True, verbose_name='Ответ администратора')
+    admin_reply_date = models.DateTimeField(null=True, blank=True, verbose_name='Дата ответа')
+
+    class Meta:
+        verbose_name = 'Вопрос о товаре'
+        verbose_name_plural = 'Вопросы о товарах'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'Вопрос от {self.author_name} о {self.product.name}'

@@ -15,6 +15,9 @@ from .views import (
     features_tags_by_category,
     feature_values_by_feature,
     tags_by_tag_name,
+    ProductReviewViewSet,
+    ProductQuestionViewSet,
+    similar_products,
     # Admin ViewSets
     ProductAdminViewSet,
     CategoryAdminViewSet,
@@ -40,6 +43,8 @@ from .views import (
     admin_stats,
 )
 
+from .views import ReviewAdminViewSet, QuestionAdminViewSet
+
 router = DefaultRouter()
 # Публичные endpoints
 router.register(r'categories', CategoryViewSet)
@@ -62,6 +67,8 @@ router.register(r'admin/news', NewsAdminViewSet, basename='admin-news')
 router.register(r'admin/images', ImageAdminViewSet, basename='admin-images')
 router.register(r'admin/messages', ContactMessageAdminViewSet, basename='admin-messages')
 router.register(r'admin/banners', BannerAdminViewSet, basename='admin-banners')
+router.register(r'admin/reviews', ReviewAdminViewSet, basename='admin-reviews')
+router.register(r'admin/questions', QuestionAdminViewSet, basename='admin-questions')
 
 urlpatterns = [
     path('', include(router.urls)),
@@ -70,6 +77,9 @@ urlpatterns = [
     path('contact/', ContactInfoView.as_view(), name='contact-info'),
     path('contact/message/', ContactMessageView.as_view(), name='contact-message'),
     path('products/by-feature/', views.products_by_feature_value, name='products-by-feature'),
+    path('products/<slug:product_slug>/reviews/', ProductReviewViewSet.as_view({'get': 'list', 'post': 'create'}), name='product-reviews'),
+    path('products/<slug:product_slug>/questions/', ProductQuestionViewSet.as_view({'get': 'list', 'post': 'create'}), name='product-questions'),
+    path('products/<slug:slug>/similar/', similar_products, name='similar-products'),
     path('features-tags-by-category/', features_tags_by_category, name='features_tags_by_category'),
     path('feature-values-by-feature/', feature_values_by_feature, name='feature_values_by_feature'),
     # Admin endpoints

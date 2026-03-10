@@ -19,13 +19,16 @@ from .filters import BrandFilter
 from .pagination import StandardResultsSetPagination
 from .models import (
     Category, Product, NewsItem, AboutContent,
-    ContactInfo, ContactMessage, Brand, ProductFeature, Tag, Feature, ProductTagGroup, TagName, FeatureValue, Image, Banner, Order, OrderItem
+    ContactInfo, ContactMessage, Brand, ProductFeature, Tag, Feature, ProductTagGroup, TagName, FeatureValue, Image, Banner, Order, OrderItem,
+    ProductReview, ProductQuestion
 )
 from .serializers import (
     CategorySerializer, ProductListSerializer, ProductDetailSerializer,
     NewsItemSerializer, NewsDetailSerializer, AboutContentSerializer,
     ContactInfoSerializer, ContactMessageSerializer, BrandSerializer, TagSerializer,
-    ProductTagGroupSerializer, BannerSerializer, OrderSerializer, OrderAdminSerializer
+    ProductTagGroupSerializer, BannerSerializer, OrderSerializer, OrderAdminSerializer,
+    ProductReviewSerializer, ProductQuestionSerializer,
+    ProductReviewAdminSerializer, ProductQuestionAdminSerializer
 )
 
 # ============ JWT AUTH VIEWS ============
@@ -1248,3 +1251,131 @@ class OrderViewSet(viewsets.ModelViewSet):
         if self.action == 'create':
             return [AllowAny()]
         return [IsAuthenticated()]
+
+
+# ============ REVIEWS & QUESTIONS ============
+
+class ProductReviewViewSet(viewsets.ModelViewSet):
+    serializer_class = ProductReviewSerializer
+    pagination_class = StandardResultsSetPagination
+
+    def get_queryset(self):
+        product_slug = self.kwargs.get('product_slug')
+        return ProductReview.objects.filter(
+            product__slug=product_slug,
+            is_published=True
+        ).order_by('-created_at')
+
+    def get_permissions(self):
+        if self.action in ('list', 'retrieve', 'create'):
+            return [AllowAny()]
+        return [IsAuthenticated()]
+
+    def perform_create(self, serializer):
+        product_slug = self.kwargs.get('product_slug')
+        product = Product.objects.get(slug=product_slug)
+        serializer.save(product=product)
+
+
+class ProductQuestionViewSet(viewsets.ModelViewSet):
+    serializer_class = ProductQuestionSerializer
+    pagination_class = StandardResultsSetPagination
+
+    def get_queryset(self):
+        product_slug = self.kwargs.get('product_slug')
+        return ProductQuestion.objects.filter(
+            product__slug=product_slug,
+            is_published=True
+        ).order_by('-created_at')
+
+    def get_permissions(self):
+        if self.action in ('list', 'retrieve', 'create'):
+            return [AllowAny()]
+        return [IsAuthenticated()]
+
+    def perform_create(self, serializer):
+        product_slug = self.kwargs.get('product_slug')
+        product = Product.objects.get(slug=product_slug)
+        serializer.save(product=product)
+
+
+@api_view(['GET'])
+def similar_products(request, slug):
+    """Get similar products from the same category"""
+    try:
+        product = Product.objects.select_related('category').get(slug=slug)
+    except Product.DoesNotExist:
+        return Response({'detail': 'Not found'}, status=404)
+
+    similar = Product.objects.filter(
+        category=product.category,
+        is_available=True
+    ).exclude(id=product.id).select_related(
+        'category', 'brand'
+    ).prefetch_related('images')[:12]
+
+    serializer = ProductListSerializer(similar, many=True, context={'request': request})
+    return Response(serializer.data)
+
+
+# ============ ADMIN: REVIEWS & QUESTIONS ============
+
+class ReviewAdminViewSet(viewsets.ModelViewSet):
+    """Управление отзывами о товарах"""
+    queryset = ProductReview.objects.select_related('product').order_by('-created_at')
+    serializer_class = ProductReviewAdminSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        is_published = self.request.query_params.get('is_published')
+        product = self.request.query_params.get('product')
+        rating = self.request.query_params.get('rating')
+        search = self.request.query_params.get('search')
+        if is_published is not None:
+            queryset = queryset.filter(is_published=is_published.lower() == 'true')
+        if product:
+            queryset = queryset.filter(product_id=product)
+        if rating:
+            queryset = queryset.filter(rating=rating)
+        if search:
+            queryset = queryset.filter(
+                Q(author_name__icontains=search) | Q(text__icontains=search)
+            )
+        return queryset
+
+    def perform_update(self, serializer):
+        from django.utils import timezone
+        instance = serializer.save()
+        if instance.admin_reply and not instance.admin_reply_date:
+            instance.admin_reply_date = timezone.now()
+            instance.save()
+
+
+class QuestionAdminViewSet(viewsets.ModelViewSet):
+    """Управление вопросами о товарах"""
+    queryset = ProductQuestion.objects.select_related('product').order_by('-created_at')
+    serializer_class = ProductQuestionAdminSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        is_published = self.request.query_params.get('is_published')
+        product = self.request.query_params.get('product')
+        search = self.request.query_params.get('search')
+        if is_published is not None:
+            queryset = queryset.filter(is_published=is_published.lower() == 'true')
+        if product:
+            queryset = queryset.filter(product_id=product)
+        if search:
+            queryset = queryset.filter(
+                Q(author_name__icontains=search) | Q(text__icontains=search)
+            )
+        return queryset
+
+    def perform_update(self, serializer):
+        from django.utils import timezone
+        instance = serializer.save()
+        if instance.admin_reply and not instance.admin_reply_date:
+            instance.admin_reply_date = timezone.now()
+            instance.save()

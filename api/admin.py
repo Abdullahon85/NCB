@@ -3,7 +3,7 @@ from django.contrib import admin
 from .models import (
     Tag, Category, Product, Image, Feature, ProductFeature, TagName, FeatureValue,
     NewsItem, AboutContent, ContactInfo, ContactMessage, Brand, ProductTagGroup, Banner,
-    Order, OrderItem
+    Order, OrderItem, ProductReview, ProductQuestion
 )
 from django import forms
 
@@ -180,6 +180,24 @@ class ContactMessageAdmin(admin.ModelAdmin):
     search_fields = ['name', 'email', 'message']
     date_hierarchy = 'created_at'
     readonly_fields = ['name', 'email', 'message', 'created_at']
+
+
+@admin.register(ProductReview)
+class ProductReviewAdmin(admin.ModelAdmin):
+    list_display = ['author_name', 'product', 'rating', 'is_published', 'created_at']
+    list_filter = ['is_published', 'rating', 'created_at']
+    search_fields = ['author_name', 'text']
+    list_editable = ['is_published']
+    readonly_fields = ['author_name', 'product', 'rating', 'text', 'created_at']
+
+
+@admin.register(ProductQuestion)
+class ProductQuestionAdmin(admin.ModelAdmin):
+    list_display = ['author_name', 'product', 'is_published', 'created_at']
+    list_filter = ['is_published', 'created_at']
+    search_fields = ['author_name', 'text']
+    list_editable = ['is_published']
+    readonly_fields = ['author_name', 'product', 'text', 'created_at']
 
 
 @admin.register(Banner)
