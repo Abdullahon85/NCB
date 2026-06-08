@@ -1,0 +1,174 @@
+# NCB Backend API
+
+Django REST API для интернет-магазина электроники.
+
+## 🚀 Быстрый старт (Development)
+
+### 1. Установка зависимостей
+
+```bash
+pip install -r requirements.txt
+```
+
+### 2. Миграции базы данных
+
+```bash
+python manage.py migrate
+```
+
+### 3. Создание суперпользователя
+
+```bash
+python manage.py createsuperuser
+```
+
+### 4. Запуск сервера
+
+```bash
+python manage.py runserver
+```
+
+API доступен по адресу: `http://localhost:8000/api/`
+Админ-панель: `http://localhost:8000/admin/`
+
+## 🔒 Безопасность
+
+### Перед деплоем в production:
+
+1. **Проверка безопасности:**
+
+```bash
+python security_check.py
+```
+
+2. **Прочитайте чеклист безопасности:**
+
+- [SECURITY_CHECKLIST.md](./SECURITY_CHECKLIST.md)
+
+3. **Инструкция по деплою:**
+
+- [RENDER_DEPLOY.md](./RENDER_DEPLOY.md) - для Render.com
+
+## 📁 Структура проекта
+
+```
+back/
+├── api/                  # Основное приложение API
+│   ├── models.py        # Модели БД
+│   ├── views.py         # Views и endpoints
+│   ├── serializers.py   # DRF сериализаторы
+│   ├── urls.py          # URL маршруты
+│   └── ...
+├── config/              # Настройки Django
+│   ├── settings.py      # Главные настройки
+│   ├── urls.py          # Главные URL
+│   └── wsgi.py          # WSGI конфигурация
+├── media/               # Загруженные файлы (не в Git)
+├── staticfiles/         # Статические файлы (не в Git)
+├── manage.py            # Django управление
+├── requirements.txt     # Python зависимости
+├── security_check.py    # Скрипт проверки безопасности
+└── check_data.py        # Скрипт проверки данных БД
+```
+
+## 🛠 Полезные команды
+
+### Проверка данных в БД
+
+```bash
+python check_data.py
+```
+
+### Создание миграций
+
+```bash
+python manage.py makemigrations
+```
+
+### Применение миграций
+
+```bash
+python manage.py migrate
+```
+
+### Сбор статических файлов
+
+```bash
+python manage.py collectstatic
+```
+
+### Проверка настроек для production
+
+```bash
+python manage.py check --deploy
+```
+
+## 🔐 Переменные окружения
+
+Создайте файл `.env` на основе `.env.example`:
+
+```bash
+cp .env.example .env
+```
+
+Основные переменные:
+
+- `DEBUG` - режим отладки (True/False)
+- `SECRET_KEY` - секретный ключ Django
+- `DATABASE_URL` - URL базы данных (для PostgreSQL)
+
+## 📦 Основные зависимости
+
+- **Django 5.2.5** - веб-фреймворк
+- **Django REST Framework** - API
+- **django-cors-headers** - CORS поддержка
+- **djangorestframework-simplejwt** - JWT аутентификация
+- **Pillow** - обработка изображений
+- **gunicorn** - WSGI сервер для production
+- **whitenoise** - статические файлы
+
+## 🌐 API Endpoints
+
+### Публичные (без авторизации):
+
+- `GET /api/products/` - список товаров
+- `GET /api/products/{id}/` - детали товара
+- `GET /api/categories/` - категории
+- `GET /api/brands/` - бренды
+- `GET /api/contact/` - контактная информация
+- `POST /api/contact/message/` - отправка сообщения
+
+### Требуют авторизации:
+
+- `POST /api/auth/login/` - вход
+- `POST /api/auth/logout/` - выход
+- `POST /api/auth/refresh/` - обновление токена
+
+### Админ-панель (требует staff права):
+
+- `GET /api/admin/products/` - управление товарами
+- `GET /api/admin/categories/` - управление категориями
+- `GET /api/admin/brands/` - управление брендами
+- и т.д.
+
+## 📝 Разработка
+
+### Code Style
+
+- Следуйте PEP 8
+- Используйте type hints где возможно
+- Документируйте сложные функции
+
+### Тестирование
+
+```bash
+python manage.py test
+```
+
+## 🚀 Production Deployment
+
+См. подробную инструкцию: [RENDER_DEPLOY.md](./RENDER_DEPLOY.md)
+
+## 📄 Лицензия
+
+Proprietary - все права защищены.

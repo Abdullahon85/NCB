@@ -1,0 +1,534 @@
+# api/serializers.py
+from rest_framework import serializers
+from .models import (
+    Category, Product, Image, Feature, ProductFeature, FeatureValue,
+    NewsItem, AboutContent, ContactInfo, ContactMessage, Brand,
+    Tag, ProductTagGroup, TagName, Banner, Order, OrderItem,
+    ProductReview, ProductQuestion
+)
+
+
+class BannerSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Banner
+        fields = ['id', 'title', 'description', 'image', 'link', 'order', 'is_active']
+
+
+class TagSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Tag
+        fields = ['id', 'name', 'slug']
+
+class ProductTagGroupSerializer(serializers.ModelSerializer):
+    tags = TagSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = ProductTagGroup
+        fields = ['id', 'group_name', 'tags']
+
+class PriceRangeSerializer(serializers.Serializer):
+    min_price = serializers.DecimalField(max_digits=10, decimal_places=2)
+    max_price = serializers.DecimalField(max_digits=10, decimal_places=2)
+
+class ImageSerializer(serializers.ModelSerializer):
+    image = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Image
+        fields = ['id', 'image', 'is_main', 'order']
+    
+    def get_image(self, obj):
+        if obj.image:
+            request = self.context.get('request')
+            try:
+                url = obj.image.url
+                return request.build_absolute_uri(url) if request else url
+            except:
+                return str(obj.image)
+        return None
+
+class ProductFeatureSerializer(serializers.ModelSerializer):
+    feature_name = serializers.CharField(source='feature.name', read_only=True, required=False)
+    feature_id = serializers.PrimaryKeyRelatedField(
+        source='feature',
+        queryset=Feature.objects.all(),
+        required=False,
+        allow_null=True
+    )
+    value_id = serializers.PrimaryKeyRelatedField(
+        source='value',
+        queryset=FeatureValue.objects.all(),
+        required=False,
+        allow_null=True
+    )
+    value_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ProductFeature
+        fields = ['id', 'feature_name', 'feature_id', 'value_id', 'value_name']
+
+    def get_value_name(self, obj):
+        """Safely get the value text from the FeatureValue object"""
+        if obj.value:
+            return obj.value.value
+        return None
+
+class CategorySerializer(serializers.ModelSerializer):
+    children = serializers.SerializerMethodField()
+    products_count = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Category
+        fields = ['id', 'name', 'slug', 'image', 'parent', 'children', 'products_count']
+    
+    def get_children(self, obj):
+        children = obj.children.all().order_by('order', 'name')
+        return CategorySerializer(children, many=True, context=self.context).data
+    
+    def get_products_count(self, obj):
+        # Use annotated value from viewset when available (avoids N+1 query)
+        if hasattr(obj, 'direct_products_count'):
+            return obj.direct_products_count
+        return obj.products.count()
+
+class ProductListSerializer(serializers.ModelSerializer):
+    """Облегченный сериализатор для списка - минимум данных для быстрой загрузки"""
+    images = serializers.SerializerMethodField()
+    main_image = serializers.SerializerMethodField()
+    category_name = serializers.CharField(source='category.name', read_only=True)
+    brand_name = serializers.CharField(source='brand.name', read_only=True, allow_null=True)
+    
+    class Meta:
+        model = Product
+        fields = [
+            'id', 'name', 'slug', 'price', 'is_available',
+            'images', 'main_image', 'category_name', 'brand_name',
+            'manufacturer_sku', 'internal_sku'
+        ]
+
+    def get_images(self, obj):
+        """Только первое изображение для списка"""
+        images = list(obj.images.all())
+        if not images:
+            return []
+        main = next((img for img in images if img.is_main), images[0])
+        return [ImageSerializer(main, context=self.context).data]
+    
+    def get_main_image(self, obj):
+        """Для обратной совместимости"""
+        images = list(obj.images.all())
+        if not images:
+            return None
+        main = next((img for img in images if img.is_main), images[0])
+        return ImageSerializer(main, context=self.context).data
+
+class BrandSerializer(serializers.ModelSerializer):
+    # expose `image` property (frontend expects `image`) while the model field is `logo`
+    image = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Brand
+        fields = ['id', 'name', 'slug', 'image', 'description']
+
+    def get_image(self, obj):
+        if obj.logo:
+            request = self.context.get('request')
+            try:
+                url = obj.logo.url
+                return request.build_absolute_uri(url) if request else url
+            except Exception:
+                return str(obj.logo)
+        return None
+
+class ProductDetailSerializer(serializers.ModelSerializer):
+    images = ImageSerializer(many=True, read_only=True)
+    features = ProductFeatureSerializer(many=True, required=False)
+    category = CategorySerializer(read_only=True)
+    category_id = serializers.PrimaryKeyRelatedField(write_only=True, source='category', queryset=Category.objects.all(), required=True)
+    brand = BrandSerializer(read_only=True)
+    brand_id = serializers.PrimaryKeyRelatedField(write_only=True, source='brand', queryset=Brand.objects.all(), required=False, allow_null=True)
+    tag_groups = ProductTagGroupSerializer(many=True, read_only=True)
+    
+    class Meta:
+        model = Product
+        fields = ['id', 'brand', 'brand_id', 'name', 'slug', 'description', 'price',
+            'is_available', 'category', 'category_id', 'images', 'features',
+            'manufacturer_sku', 'internal_sku', 'tag_groups', 'created_at', 'updated_at']
+    
+    def create(self, validated_data):
+        features_data = validated_data.pop('features', [])
+        product = super().create(validated_data)
+        # Create ProductFeature instances
+        self._save_features(product, features_data)
+        return product
+
+    def update(self, instance, validated_data):
+        features_data = validated_data.pop('features', None)
+        product = super().update(instance, validated_data)
+        # Update ProductFeature instances
+        if features_data is not None:
+            instance.features.all().delete()
+            self._save_features(product, features_data)
+        return product
+
+    def _save_features(self, product, features_data):
+        """Save ProductFeature instances for the product"""
+        for feature_data in features_data:
+            feature = feature_data.get('feature')
+            value = feature_data.get('value')
+            if feature and value:
+                ProductFeature.objects.create(
+                    product=product,
+                    feature=feature,
+                    value=value
+                )
+
+class NewsItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = NewsItem
+        fields = ['id', 'title', 'slug', 'preview', 'image', 'pub_date']
+
+class NewsDetailSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = NewsItem
+        fields = ['id', 'title', 'slug', 'content', 'preview', 'image', 'pub_date']
+
+class AboutContentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AboutContent
+        fields = ['title', 'content', 'image']
+
+class ContactInfoSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ContactInfo
+        fields = ['phone', 'email', 'address', 'map_url', 'instagram', 'telegram', 'whatsapp', 'facebook', 'working_hours']
+
+class ContactMessageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ContactMessage
+        fields = ['name', 'email', 'message']
+
+
+class ProductReviewSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProductReview
+        fields = ['id', 'product', 'author_name', 'rating', 'text',
+                  'created_at', 'is_published', 'admin_reply', 'admin_reply_date']
+        read_only_fields = ['id', 'created_at', 'is_published', 'admin_reply', 'admin_reply_date', 'product']
+
+
+class ProductQuestionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProductQuestion
+        fields = ['id', 'product', 'author_name', 'text',
+                  'created_at', 'is_published', 'admin_reply', 'admin_reply_date']
+        read_only_fields = ['id', 'created_at', 'is_published', 'admin_reply', 'admin_reply_date', 'product']
+
+
+# ============ ADMIN SERIALIZERS ============
+
+class CategoryAdminSerializer(serializers.ModelSerializer):
+    products_count = serializers.SerializerMethodField()
+    parent_name = serializers.CharField(source='parent.name', read_only=True)
+    
+    class Meta:
+        model = Category
+        fields = ['id', 'name', 'slug', 'parent', 'parent_name', 'image', 'order', 'products_count']
+    
+    def get_products_count(self, obj):
+        return obj.products.count()
+
+
+class ProductAdminSerializer(serializers.ModelSerializer):
+    category_name = serializers.CharField(source='category.name', read_only=True)
+    brand_name = serializers.CharField(source='brand.name', read_only=True)
+    images_count = serializers.SerializerMethodField()
+    main_image = serializers.SerializerMethodField()
+    # Inline данные для редактирования
+    images = serializers.SerializerMethodField()
+    features = serializers.SerializerMethodField()
+    tag_groups = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Product
+        fields = [
+            'id', 'name', 'slug', 'description', 'price', 'category', 'category_name',
+            'brand', 'brand_name', 'is_available', 'manufacturer_sku', 'internal_sku',
+            'created_at', 'images_count', 'main_image', 'images', 'features', 'tag_groups'
+        ]
+    
+    def get_images_count(self, obj):
+        return obj.images.count()
+    
+    def get_main_image(self, obj):
+        main = obj.images.filter(is_main=True).first()
+        if not main:
+            main = obj.images.first()
+        if main and main.image:
+            request = self.context.get('request')
+            try:
+                url = main.image.url
+                return request.build_absolute_uri(url) if request else url
+            except:
+                return str(main.image)
+        return None
+    
+    def get_images(self, obj):
+        request = self.context.get('request')
+        return [{
+            'id': img.id,
+            'image': request.build_absolute_uri(img.image.url) if img.image and request else (img.image.url if img.image else None),
+            'is_main': img.is_main,
+            'order': img.order
+        } for img in obj.images.all().order_by('order')]
+    
+    def get_features(self, obj):
+        return [{
+            'id': pf.id,
+            'feature_id': pf.feature_id,
+            'feature_name': pf.feature.name if pf.feature else None,
+            'value_id': pf.value_id,
+            'value_text': pf.value.value if pf.value else None
+        } for pf in obj.features.all().select_related('feature', 'value')]
+    
+    def get_tag_groups(self, obj):
+        result = []
+        for tg in obj.tag_groups.all().prefetch_related('tags'):
+            result.append({
+                'id': tg.id,
+                'group_name_id': tg.group_name_id,
+                'group_name_text': tg.group_name.name if tg.group_name else None,
+                'tag_ids': list(tg.tags.values_list('id', flat=True))
+            })
+        return result
+
+
+class BrandAdminSerializer(serializers.ModelSerializer):
+    products_count = serializers.SerializerMethodField()
+    logo_url = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Brand
+        fields = ['id', 'name', 'slug', 'logo', 'logo_url', 'description', 'created_at', 'products_count']
+    
+    def get_products_count(self, obj):
+        return obj.products.count()
+    
+    def get_logo_url(self, obj):
+        if obj.logo:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.logo.url)
+            return obj.logo.url
+        return None
+
+
+class TagAdminSerializer(serializers.ModelSerializer):
+    category_name = serializers.CharField(source='category.name', read_only=True)
+    tag_name_display = serializers.CharField(source='tag_name.name', read_only=True)
+    
+    class Meta:
+        model = Tag
+        fields = ['id', 'name', 'slug', 'category', 'category_name', 'tag_name', 'tag_name_display']
+
+
+class TagNameAdminSerializer(serializers.ModelSerializer):
+    category_name = serializers.CharField(source='category.name', read_only=True)
+    tags_count = serializers.SerializerMethodField()
+    tags = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = TagName
+        fields = ['id', 'name', 'category', 'category_name', 'created_at', 'tags_count', 'tags']
+    
+    def get_tags_count(self, obj):
+        return obj.tags.count()
+    
+    def get_tags(self, obj):
+        """Возвращает привязанные теги"""
+        return [{'id': t.id, 'name': t.name, 'slug': t.slug} for t in obj.tags.all()[:30]]
+
+
+class FeatureAdminSerializer(serializers.ModelSerializer):
+    category_name = serializers.CharField(source='category.name', read_only=True)
+    values_count = serializers.SerializerMethodField()
+    values = serializers.SerializerMethodField()
+    value_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        write_only=True,
+        required=False,
+        allow_empty=True
+    )
+    
+    class Meta:
+        model = Feature
+        fields = ['id', 'name', 'category', 'category_name', 'values_count', 'values', 'value_ids']
+    
+    def validate(self, data):
+        """Проверка уникальности названия характеристики в рамках категории"""
+        name = data.get('name')
+        category = data.get('category')
+        
+        # При обновлении исключаем текущий объект из проверки
+        instance = self.instance
+        queryset = Feature.objects.filter(name=name, category=category)
+        
+        if instance:
+            queryset = queryset.exclude(pk=instance.pk)
+        
+        if queryset.exists():
+            raise serializers.ValidationError({
+                'name': f'Характеристика "{name}" уже существует в категории "{category.name}"'
+            })
+        
+        return data
+    
+    def create(self, validated_data):
+        value_ids = validated_data.pop('value_ids', [])
+        feature = Feature.objects.create(**validated_data)
+        if value_ids:
+            feature.values.set(value_ids)
+        return feature
+    
+    def update(self, instance, validated_data):
+        value_ids = validated_data.pop('value_ids', None)
+        instance = super().update(instance, validated_data)
+        if value_ids is not None:
+            instance.values.set(value_ids)
+        return instance
+    
+    def get_values_count(self, obj):
+        return obj.values.count()
+    
+    def get_values(self, obj):
+        """Возвращает привязанные значения характеристики"""
+        return [{'id': v.id, 'value': v.value} for v in obj.values.all()[:20]]
+
+
+class FeatureValueAdminSerializer(serializers.ModelSerializer):
+    category_name = serializers.CharField(source='category.name', read_only=True)
+    features_info = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = FeatureValue
+        fields = ['id', 'value', 'category', 'category_name', 'features_info']
+    
+    def get_features_info(self, obj):
+        """Возвращает список привязанных характеристик"""
+        return [{'id': f.id, 'name': f.name} for f in obj.features.all()]
+
+
+class NewsAdminSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = NewsItem
+        fields = ['id', 'title', 'slug', 'preview', 'content', 'image', 'pub_date', 'is_published']
+        read_only_fields = ['pub_date']
+
+
+class AboutContentAdminSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AboutContent
+        fields = ['id', 'title', 'content', 'image', 'updated_at']
+        read_only_fields = ['updated_at']
+
+
+class ContactInfoAdminSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ContactInfo
+        fields = ['id', 'phone', 'email', 'address', 'map_url', 'instagram', 'telegram', 'whatsapp', 'facebook', 'working_hours', 'updated_at']
+        read_only_fields = ['updated_at']
+
+
+class ProductReviewAdminSerializer(serializers.ModelSerializer):
+    product_name = serializers.CharField(source='product.name', read_only=True)
+
+    class Meta:
+        model = ProductReview
+        fields = ['id', 'product', 'product_name', 'author_name', 'rating', 'text',
+                  'created_at', 'is_published', 'admin_reply', 'admin_reply_date']
+        read_only_fields = ['id', 'created_at']
+
+
+class ProductQuestionAdminSerializer(serializers.ModelSerializer):
+    product_name = serializers.CharField(source='product.name', read_only=True)
+
+    class Meta:
+        model = ProductQuestion
+        fields = ['id', 'product', 'product_name', 'author_name', 'text',
+                  'created_at', 'is_published', 'admin_reply', 'admin_reply_date']
+        read_only_fields = ['id', 'created_at']
+
+
+class ContactMessageAdminSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ContactMessage
+        fields = ['id', 'name', 'email', 'message', 'created_at', 'is_processed']
+        read_only_fields = ['name', 'email', 'message', 'created_at']
+
+
+class ImageAdminSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Image
+        fields = ['id', 'product', 'image', 'is_main', 'order']
+
+
+# ============ AUTH SERIALIZERS ============
+from django.contrib.auth.models import User
+from django.contrib.auth.password_validation import validate_password
+
+class UserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'is_staff', 'is_superuser', 'date_joined', 'last_login']
+        read_only_fields = ['id', 'date_joined', 'last_login']
+
+
+class LoginSerializer(serializers.Serializer):
+    username = serializers.CharField()
+    password = serializers.CharField(write_only=True)
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    old_password = serializers.CharField(write_only=True)
+    new_password = serializers.CharField(write_only=True)
+    
+    def validate_new_password(self, value):
+        validate_password(value)
+        return value
+
+
+class UpdateProfileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ['email', 'first_name', 'last_name']
+
+
+class OrderItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OrderItem
+        fields = ['product', 'product_name', 'product_sku', 'price', 'quantity']
+
+
+class OrderSerializer(serializers.ModelSerializer):
+    items = OrderItemSerializer(many=True)
+
+    class Meta:
+        model = Order
+        fields = [
+            'id', 'customer_name', 'customer_phone', 'customer_email',
+            'comment', 'status', 'created_at', 'items'
+        ]
+        read_only_fields = ['id', 'status', 'created_at']
+
+    def create(self, validated_data):
+        items_data = validated_data.pop('items')
+        order = Order.objects.create(**validated_data)
+        for item_data in items_data:
+            OrderItem.objects.create(order=order, **item_data)
+        return order
+
+
+class OrderAdminSerializer(OrderSerializer):
+    """Сериализатор для администратора - включает статус"""
+    class Meta(OrderSerializer.Meta):
+        read_only_fields = ['id', 'created_at']

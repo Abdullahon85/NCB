@@ -1,0 +1,1427 @@
+# api/views.py
+from decimal import Decimal
+from rest_framework import viewsets, generics, status, filters
+from rest_framework.response import Response
+from rest_framework.pagination import PageNumberPagination
+from rest_framework.permissions import IsAuthenticated, AllowAny
+from django.http import Http404
+from django.http import JsonResponse
+from rest_framework.decorators import api_view, action, permission_classes
+from django.db.models import Q, Min, Max, Count
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from django.views.decorators.cache import cache_page
+from django.utils.decorators import method_decorator
+from .throttles import LoginRateThrottle
+from .models import Brand, Product
+from .serializers import BrandSerializer, ProductListSerializer
+from .filters import BrandFilter
+
+from .pagination import StandardResultsSetPagination
+from .models import (
+    Category, Product, NewsItem, AboutContent,
+    ContactInfo, ContactMessage, Brand, ProductFeature, Tag, Feature, ProductTagGroup, TagName, FeatureValue, Image, Banner, Order, OrderItem,
+    ProductReview, ProductQuestion
+)
+from .serializers import (
+    CategorySerializer, ProductListSerializer, ProductDetailSerializer,
+    NewsItemSerializer, NewsDetailSerializer, AboutContentSerializer,
+    ContactInfoSerializer, ContactMessageSerializer, BrandSerializer, TagSerializer,
+    ProductTagGroupSerializer, BannerSerializer, OrderSerializer, OrderAdminSerializer,
+    ProductReviewSerializer, ProductQuestionSerializer,
+    ProductReviewAdminSerializer, ProductQuestionAdminSerializer
+)
+
+# ============ JWT AUTH VIEWS ============
+class AdminTokenObtainPairView(TokenObtainPairView):
+    """
+    JWT Login endpoint with rate limiting to prevent brute force attacks.
+    """
+    throttle_classes = [LoginRateThrottle]
+    permission_classes = [AllowAny]
+
+
+class AdminTokenRefreshView(TokenRefreshView):
+    """
+    JWT Token refresh endpoint.
+    """
+    permission_classes = [AllowAny]
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def admin_me(request):
+    """
+    Get current authenticated user information.
+    """
+    user = request.user
+    if not user.is_staff:
+        return Response(
+            {'detail': 'Only admin users can access this endpoint.'},
+            status=status.HTTP_403_FORBIDDEN
+        )
+    
+    return Response({
+        'id': user.id,
+        'username': user.username,
+        'email': user.email,
+        'first_name': user.first_name,
+        'last_name': user.last_name,
+        'is_staff': user.is_staff,
+        'is_superuser': user.is_superuser,
+        'date_joined': user.date_joined.isoformat() if user.date_joined else None,
+        'last_login': user.last_login.isoformat() if user.last_login else None,
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def admin_logout(request):
+    """
+    Logout endpoint (client should clear tokens).
+    """
+    return Response({'detail': 'Logout successful'}, status=status.HTTP_200_OK)
+
+
+# ============ EXISTING VIEWS ============
+@api_view(['GET'])
+def features_tags_by_category(request):
+    """Get features, tags, and feature values for a specific category"""
+    try:
+        category_id = request.GET.get('category')
+        
+        if not category_id:
+            return JsonResponse({'error': 'category parameter is required'}, status=400)
+        
+        # Get all features with their values for this category
+        features = Feature.objects.filter(category_id=category_id).prefetch_related('values')
+        
+        # Get all tags for this category
+        tags = Tag.objects.filter(category_id=category_id).select_related('tag_name')
+        
+        # Get all tag names/groups for this category  
+        tag_names = TagName.objects.filter(category_id=category_id).prefetch_related('tags')
+        
+        # Get all feature values for this category
+        feature_values = FeatureValue.objects.filter(category_id=category_id)
+        
+        # Build features data with their values
+        features_data = []
+        for feature in features:
+            feature_dict = {
+                'id': feature.id,
+                'name': feature.name,
+                'values': [{'id': v.id, 'value': v.value} for v in feature.values.all()]
+            }
+            features_data.append(feature_dict)
+        
+        # Build tags data
+        tags_data = []
+        for tag in tags:
+            tag_dict = {
+                'id': tag.id,
+                'name': tag.name,
+                'tag_name_id': tag.tag_name_id,
+                'tag_name_name': tag.tag_name.name if tag.tag_name else None
+            }
+            tags_data.append(tag_dict)
+        
+        # Build tag names data with their tags
+        tag_names_data = []
+        for tn in tag_names:
+            tn_dict = {
+                'id': tn.id,
+                'name': tn.name,
+                'tags': [{'id': t.id, 'name': t.name} for t in tn.tags.all()]
+            }
+            tag_names_data.append(tn_dict)
+        
+        # Build feature values data
+        feature_values_data = list(feature_values.values('id', 'value', 'category_id'))
+        
+        return JsonResponse({
+            'features': features_data,
+            'tags': tags_data,
+            'tag_names': tag_names_data,
+            'feature_values': feature_values_data
+        })
+    except Exception as e:
+        import logging
+        import traceback
+        logging.error(f"Error in features_tags_by_category: {str(e)}\n{traceback.format_exc()}")
+        return JsonResponse({'error': 'Internal server error'}, status=500)
+
+
+@api_view(['GET'])
+def feature_values_by_feature(request):
+    """Получить значения характеристики по её ID"""
+    feature_id = request.GET.get('feature_id')
+    if not feature_id:
+        return JsonResponse({'error': 'feature_id is required'}, status=400)
+    
+    try:
+        # Get the feature and retrieve its values through ManyToMany relationship
+        feature = Feature.objects.prefetch_related('values').get(id=feature_id)
+        values = feature.values.all().values('id', 'value')
+        return JsonResponse({'values': list(values)})
+    except Feature.DoesNotExist:
+        return JsonResponse({'error': 'Feature not found'}, status=404)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Error in feature_values_by_feature")
+        return JsonResponse({'error': 'Internal server error'}, status=500)
+class TagViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Tag.objects.all().order_by('name')
+    serializer_class = TagSerializer
+
+    @action(detail=False, methods=['get'])
+    def with_count(self, request):
+        tags = Tag.objects.annotate(count=Count('producttaggroup')).order_by('-count')
+        data = [{'id': t.id, 'name': t.name, 'slug': t.slug, 'count': t.count} for t in tags]
+        return Response(data)
+
+
+@api_view(['GET'])
+def products_by_feature_value(request):
+    value = request.GET.get('value')
+    if not value:
+        return Response({"error": "value parameter is required"}, status=400)
+
+    product_ids = ProductFeature.objects.filter(value__value__icontains=value).values_list('product_id', flat=True)
+    queryset = Product.objects.filter(id__in=product_ids).distinct()
+
+    serializer = ProductListSerializer(queryset, many=True, context={'request': request})
+    return Response(serializer.data)
+
+
+def apply_product_filters(request, queryset):
+    params = request.query_params
+    tag_param = params.get('tag')  # comma-separated tag slugs
+    if tag_param:
+        tag_slugs = [t.strip() for t in tag_param.split(',') if t.strip()]
+        if tag_slugs:
+            # AND across groups, OR within the same group
+            tag_objs = Tag.objects.filter(slug__in=tag_slugs).values('slug', 'tag_name_id')
+            group_to_slugs: dict = {}
+            for t in tag_objs:
+                gid = t['tag_name_id'] if t['tag_name_id'] is not None else '__none__'
+                group_to_slugs.setdefault(gid, []).append(t['slug'])
+            for slugs_in_group in group_to_slugs.values():
+                queryset = queryset.filter(tag_groups__tags__slug__in=slugs_in_group)
+
+    # --- фильтр по цене ---
+    price_min = params.get('price_min')
+    price_max = params.get('price_max')
+    if price_min:
+        try:
+            queryset = queryset.filter(price__gte=float(price_min))
+        except ValueError:
+            pass
+    if price_max:
+        try:
+            queryset = queryset.filter(price__lte=float(price_max))
+        except ValueError:
+            pass
+
+    # --- фильтр по бренду ---
+    brand_param = params.get('brand')
+    if brand_param:
+        slugs = [s.strip() for s in brand_param.split(',') if s.strip()]
+        queryset = queryset.filter(brand__slug__in=slugs)
+
+    # --- фильтр доступности ---
+    is_av = params.get('is_available')
+    if is_av is not None:
+        val = str(is_av).lower()
+        if val in ('true', '1', 'yes'):
+            queryset = queryset.filter(is_available=True)
+        elif val in ('false', '0', 'no'):
+            queryset = queryset.filter(is_available=False)
+
+
+    # --- фильтр по поиску ---
+    search = params.get('search')
+    if search:
+        queryset = queryset.filter(
+            Q(name__icontains=search) | 
+            Q(description__icontains=search) |
+            Q(manufacturer_sku__icontains=search) |
+            Q(internal_sku__icontains=search)
+        )
+
+    # --- фильтр по характеристикам ---
+    for k, v in params.items():
+        if k.startswith('feature_') and v:
+            try:
+                fid = int(k.split('_', 1)[1])
+                queryset = queryset.filter(features__feature_id=fid, features__value_id=v)
+            except (ValueError, IndexError):
+                continue
+
+    # --- фильтр по категории с рекурсией ---
+    category_slug = params.get('category')
+    if category_slug:
+        try:
+            category = Category.objects.get(slug=category_slug)
+
+            def collect_category_ids(cat):
+                ids = [cat.id]
+                for child in cat.children.all():
+                    ids.extend(collect_category_ids(child))
+                return ids
+
+            category_ids = collect_category_ids(category)
+            queryset = queryset.filter(category_id__in=category_ids)
+        except Category.DoesNotExist:
+            queryset = queryset.none()
+    # --- фильтр по группам тегов ---
+    for key, val in params.items():
+        if key.startswith('taggroup_') and val:
+            queryset = queryset.filter(tags__group__slug=key.split('_', 1)[1], tags__slug=val)
+
+    # --- сортировка ---
+    ordering = params.get('ordering', '-created_at')
+    allowed = {'name', '-name', 'price', '-price', 'created_at', '-created_at'}
+    if ordering not in allowed:
+        ordering = '-created_at'
+    queryset = queryset.order_by(ordering)
+
+    return queryset.distinct()
+
+
+# -------------------------
+# ViewSets
+# -------------------------
+
+
+
+class ProductViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Product.objects.all()
+    lookup_field = 'slug'
+    pagination_class = StandardResultsSetPagination
+
+    def get_queryset(self):
+        queryset = Product.objects.all()
+        queryset = apply_product_filters(self.request, queryset)
+        return queryset
+
+    def get_serializer_class(self):
+        if self.action == 'retrieve':
+            return ProductDetailSerializer
+        return ProductListSerializer
+
+    @action(detail=False, methods=['get'], url_path='price-range')
+    def price_range(self, request, *args, **kwargs):
+        category_slug = request.query_params.get('category')
+
+        if category_slug:
+            try:
+                category = Category.objects.get(slug=category_slug)
+                qs = category.get_all_products().exclude(price__isnull=True)
+            except Category.DoesNotExist:
+                return Response({'min_price': None, 'max_price': None})
+        else:
+            qs = Product.objects.exclude(price__isnull=True)
+
+        agg = qs.aggregate(min_price=Min('price'), max_price=Max('price'))
+
+        return Response({
+            'min_price': float(agg['min_price']) if agg['min_price'] else None,
+            'max_price': float(agg['max_price']) if agg['max_price'] else None,
+        })
+
+    @action(detail=True, methods=['post'], url_path='upload-image')
+    def upload_image(self, request, slug=None):
+        """Upload multiple images for a product"""
+        from .models import Image
+        
+        product = self.get_object()
+        uploaded_images = []
+        
+        files = request.FILES.getlist('images')
+        if not files:
+            return Response({'error': 'No images provided'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        for file in files:
+            is_valid, error_msg = validate_uploaded_image(file)
+            if not is_valid:
+                return Response({'error': error_msg}, status=status.HTTP_400_BAD_REQUEST)
+            image = Image.objects.create(product=product, image=file)
+            uploaded_images.append({'id': image.id, 'image': image.image.url})
+        
+        return Response({'images': uploaded_images}, status=status.HTTP_201_CREATED)
+
+
+class BrandViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Brand.objects.all()
+    serializer_class = BrandSerializer
+    lookup_field = "slug"
+    filter_backends = [filters.SearchFilter, BrandFilter]
+    search_fields = ['name', 'description']
+    pagination_class = StandardResultsSetPagination
+
+    # Кэширование списка брендов на 5 минут
+    @method_decorator(cache_page(60 * 5))
+    def list(self, request, *args, **kwargs):
+        return super().list(request, *args, **kwargs)
+
+    def get_queryset(self):
+        queryset = Brand.objects.annotate(
+            products_count=Count('products')
+        )
+        return queryset
+
+    @action(detail=True, methods=["get"], url_path="products")
+    def products(self, request, slug=None):
+        brand = self.get_object()
+        # Start from products belonging to this brand and apply the same product filters
+        products_qs = Product.objects.filter(brand=brand)
+        # Reuse global product filters (price, tags, category, search, availability, etc.)
+        try:
+            products_qs = apply_product_filters(request, products_qs)
+        except Exception:
+            # Fallback to a basic queryset if filtering fails for any reason
+            products_qs = products_qs.order_by('name')
+
+        page = self.paginate_queryset(products_qs)
+        if page is not None:
+            serializer = ProductListSerializer(page, many=True, context={"request": request})
+            return self.get_paginated_response(serializer.data)
+        serializer = ProductListSerializer(products_qs, many=True, context={"request": request})
+        return Response(serializer.data)
+        
+    @action(detail=True, methods=['get'])
+    def categories(self, request, slug=None):
+        """Получить список категорий, в которых есть товары данного бренда"""
+        brand = self.get_object()
+        categories = Category.objects.filter(products__brand=brand).distinct()
+        serializer = CategorySerializer(categories, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['get'])
+    def tags(self, request, slug=None):
+        """Получить список тегов, которые используются в товарах данного бренда"""
+        brand = self.get_object()
+        # Get ProductTagGroups for this brand's products
+        products = Product.objects.filter(brand=brand)
+        tag_groups = ProductTagGroup.objects.filter(
+            product__in=products
+        ).prefetch_related('tags').distinct()
+        
+        grouped_data = {}
+        
+        for group in tag_groups:
+            tag_name_obj = group.group_name
+            if not tag_name_obj:
+                continue
+            
+            key = tag_name_obj.id
+            if key not in grouped_data:
+                grouped_data[key] = {
+                    'id': tag_name_obj.id,
+                    'group_name': tag_name_obj.name,
+                    'tags': {}
+                }
+            
+            for tag in group.tags.all():
+                grouped_data[key]['tags'][tag.id] = {
+                    'id': tag.id,
+                    'name': tag.name,
+                    'slug': tag.slug
+                }
+        
+        result = [
+            {
+                'id': data['id'],
+                'group_name': data['group_name'],
+                'tags': list(data['tags'].values())
+            }
+            for data in grouped_data.values()
+        ]
+        
+        return Response(result)
+
+
+class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Category.objects.filter(parent=None).order_by('order', 'name')
+    serializer_class = CategorySerializer
+    lookup_field = 'slug'
+
+    # Кэширование списка категорий на 5 минут
+    @method_decorator(cache_page(60 * 5))
+    def list(self, request, *args, **kwargs):
+        return super().list(request, *args, **kwargs)
+
+    # Кэширование детальной категории на 5 минут
+    @method_decorator(cache_page(60 * 5))
+    def retrieve(self, request, *args, **kwargs):
+        return super().retrieve(request, *args, **kwargs)
+
+    def get_queryset(self):
+        queryset = super().get_queryset().annotate(
+            direct_products_count=Count('products', distinct=True)
+        )
+        limit = self.request.query_params.get('limit')
+        if limit:
+            try:
+                queryset = queryset[:int(limit)]
+            except (ValueError, TypeError):
+                pass
+        return queryset
+
+    @action(detail=True, methods=['get'])
+    def products(self, request, slug=None):
+        try:
+            category = self.get_object()
+        except Http404:
+            return Response({'error': 'Категория не найдена'}, status=404)
+
+        products = category.get_all_products()
+        products = apply_product_filters(request, products)
+
+        paginator = StandardResultsSetPagination()
+        page = paginator.paginate_queryset(products, request)
+        if page is not None:
+            serializer = ProductListSerializer(page, many=True)
+            return paginator.get_paginated_response(serializer.data)
+
+        serializer = ProductListSerializer(products, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['get'])
+    def brands(self, request, slug=None):
+        try:
+            category = self.get_object()
+        except Http404:
+            return Response({'error': 'Категория не найдена'}, status=404)
+        products = category.get_all_products()
+        brands = Brand.objects.filter(products__in=products).distinct()
+        serializer = BrandSerializer(brands, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['get'])
+    def tags(self, request, slug=None):
+        try:
+            category = self.get_object()
+        except Http404:
+            return Response({'error': 'Категория не найдена'}, status=404)
+
+        all_products = category.get_all_products()
+
+        # Apply price filter if provided
+        price_min = request.query_params.get('price_min')
+        price_max = request.query_params.get('price_max')
+        if price_min:
+            try:
+                all_products = all_products.filter(price__gte=float(price_min))
+            except ValueError:
+                pass
+        if price_max:
+            try:
+                all_products = all_products.filter(price__lte=float(price_max))
+            except ValueError:
+                pass
+
+        # --- Faceted filtering: apply selected tags with AND-across-groups / OR-within-group ---
+        selected_tags_param = request.query_params.get('selected_tags', '')
+        selected_slugs = [s.strip() for s in selected_tags_param.split(',') if s.strip()]
+
+        filtered_products = all_products
+        if selected_slugs:
+            tag_objs = Tag.objects.filter(slug__in=selected_slugs).values('slug', 'tag_name_id')
+            group_to_slugs: dict = {}
+            for t in tag_objs:
+                gid = t['tag_name_id'] if t['tag_name_id'] is not None else '__none__'
+                group_to_slugs.setdefault(gid, []).append(t['slug'])
+            for slugs_in_group in group_to_slugs.values():
+                filtered_products = filtered_products.filter(tag_groups__tags__slug__in=slugs_in_group)
+            filtered_products = filtered_products.distinct()
+
+        # Count products per tag within the filtered set.
+        # For each tag T: product_count = how many filtered products also have T.
+        tag_counts_qs = Tag.objects.filter(
+            producttaggroup_tags__product__in=filtered_products
+        ).annotate(
+            product_count=Count('producttaggroup_tags__product', distinct=True)
+        ).values('id', 'product_count')
+        tag_count_map = {item['id']: item['product_count'] for item in tag_counts_qs}
+
+        # Collect all tags for this category (unfiltered) so selected tags always appear.
+        tag_groups = ProductTagGroup.objects.filter(
+            product__in=all_products
+        ).prefetch_related('tags').select_related('group_name').distinct()
+
+        grouped_data: dict = {}
+
+        for group in tag_groups:
+            tag_name_obj = group.group_name
+            if not tag_name_obj:
+                continue
+
+            key = tag_name_obj.id
+            if key not in grouped_data:
+                grouped_data[key] = {
+                    'id': tag_name_obj.id,
+                    'group_name': tag_name_obj.name,
+                    'tags': {}
+                }
+
+            for tag in group.tags.all():
+                if tag.id not in grouped_data[key]['tags']:
+                    grouped_data[key]['tags'][tag.id] = {
+                        'id': tag.id,
+                        'name': tag.name,
+                        'slug': tag.slug,
+                        'product_count': tag_count_map.get(tag.id, 0)
+                    }
+
+        result = [
+            {
+                'id': data['id'],
+                'group_name': data['group_name'],
+                'tags': sorted(data['tags'].values(), key=lambda t: t['name'])
+            }
+            for data in grouped_data.values()
+        ]
+
+        return Response(result)
+
+
+class BannerViewSet(viewsets.ReadOnlyModelViewSet):
+    """Публичный ViewSet для баннеров"""
+    queryset = Banner.objects.filter(is_active=True).order_by('order')
+    serializer_class = BannerSerializer
+    pagination_class = None
+
+    @method_decorator(cache_page(60 * 5))
+    def list(self, request, *args, **kwargs):
+        return super().list(request, *args, **kwargs)
+
+
+class NewsViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = NewsItem.objects.filter(is_published=True).order_by('-pub_date')
+    lookup_field = 'slug'
+    pagination_class = StandardResultsSetPagination
+
+    def get_serializer_class(self):
+        if self.action == 'retrieve':
+            return NewsDetailSerializer
+        return NewsItemSerializer
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        limit = self.request.query_params.get('limit')
+        if limit:
+            try:
+                queryset = queryset[:int(limit)]
+            except (ValueError, TypeError):
+                pass
+        return queryset
+
+
+class AboutContentView(generics.RetrieveAPIView):
+    serializer_class = AboutContentSerializer
+
+    def get_object(self):
+        obj = AboutContent.objects.first()
+        if obj is None:
+            return AboutContent(title='О нас', content='Информация временно отсутствует')
+        return obj
+
+
+class ContactInfoView(generics.RetrieveAPIView):
+    serializer_class = ContactInfoSerializer
+
+    def get_object(self):
+        obj = ContactInfo.objects.first()
+        if obj is None:
+            return ContactInfo(phone='', email='', address='Информация отсутствует')
+        return obj
+
+
+class ContactMessageView(generics.CreateAPIView):
+    queryset = ContactMessage.objects.all()
+    serializer_class = ContactMessageSerializer
+    permission_classes = [AllowAny]
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        self.perform_create(serializer)
+        return Response({'message': 'Ваше сообщение успешно отправлено!'}, status=status.HTTP_201_CREATED)
+
+# ============ ADMIN VIEWSETS ============
+from .serializers import (
+    CategoryAdminSerializer, ProductAdminSerializer, BrandAdminSerializer, TagAdminSerializer,
+    TagNameAdminSerializer, FeatureAdminSerializer, FeatureValueAdminSerializer,
+    NewsAdminSerializer, AboutContentAdminSerializer, ContactInfoAdminSerializer,
+    ContactMessageAdminSerializer, ImageAdminSerializer,
+    UserSerializer, LoginSerializer, ChangePasswordSerializer, UpdateProfileSerializer
+)
+from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth.models import User
+from rest_framework.permissions import IsAuthenticated, IsAdminUser
+
+# === Security: File upload validation ===
+import mimetypes
+
+ALLOWED_IMAGE_TYPES = {'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml'}
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
+
+def validate_uploaded_image(file):
+    """Validate uploaded file is a safe image within size limits."""
+    if file.size > MAX_UPLOAD_SIZE:
+        return False, f'File too large. Maximum size is {MAX_UPLOAD_SIZE // (1024*1024)}MB.'
+    content_type = getattr(file, 'content_type', '')
+    if content_type not in ALLOWED_IMAGE_TYPES:
+        ext = file.name.rsplit('.', 1)[-1].lower() if '.' in file.name else ''
+        guessed_type, _ = mimetypes.guess_type(f'file.{ext}')
+        if guessed_type not in ALLOWED_IMAGE_TYPES:
+            return False, 'Invalid file type. Only JPEG, PNG, GIF, WebP, SVG images are allowed.'
+    return True, None
+
+
+class ProductAdminViewSet(viewsets.ModelViewSet):
+    """CRUD для товаров (админка) с поддержкой inline изображений, характеристик и групп тегов"""
+    queryset = Product.objects.all().select_related('category', 'brand').order_by('-created_at')
+    serializer_class = ProductAdminSerializer
+    lookup_field = 'pk'
+    pagination_class = StandardResultsSetPagination
+    permission_classes = [IsAdminUser]
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        search = self.request.query_params.get('search')
+        category = self.request.query_params.get('category')
+        brand = self.request.query_params.get('brand')
+        is_available = self.request.query_params.get('is_available')
+        
+        if search:
+            queryset = queryset.filter(
+                Q(name__icontains=search) | 
+                Q(internal_sku__icontains=search) | 
+                Q(manufacturer_sku__icontains=search)
+            )
+        if category:
+            queryset = queryset.filter(category_id=category)
+        if brand:
+            queryset = queryset.filter(brand_id=brand)
+        if is_available is not None:
+            queryset = queryset.filter(is_available=is_available.lower() in ['true', '1'])
+        
+        return queryset
+    
+    def create(self, request, *args, **kwargs):
+        """Создание товара с inline данными"""
+        from django.db import transaction
+        data = request.data
+        
+        with transaction.atomic():
+            # Основные данные товара
+            product_data = {
+                'name': data.get('name'),
+                'slug': data.get('slug') or None,
+                'description': data.get('description', ''),
+                'category_id': data.get('category'),
+                'brand_id': data.get('brand') or None,
+                'price': data.get('price') or None,
+                'is_available': data.get('is_available', True),
+                'manufacturer_sku': data.get('manufacturer_sku', ''),
+                'internal_sku': data.get('internal_sku') or None,
+            }
+            
+            product = Product(**product_data)
+            product.save()
+            
+            # Обработка характеристик (features)
+            features_data = data.get('features', [])
+            for feat in features_data:
+                if feat.get('feature_id') and feat.get('value_id'):
+                    ProductFeature.objects.create(
+                        product=product,
+                        feature_id=feat['feature_id'],
+                        value_id=feat['value_id']
+                    )
+            
+            # Обработка групп тегов (tag_groups)
+            tag_groups_data = data.get('tag_groups', [])
+            for tg in tag_groups_data:
+                if tg.get('group_name_id'):
+                    tag_group = ProductTagGroup.objects.create(
+                        product=product,
+                        group_name_id=tg['group_name_id']
+                    )
+                    tag_ids = tg.get('tag_ids', [])
+                    if tag_ids:
+                        tag_group.tags.set(tag_ids)
+        
+        serializer = self.get_serializer(product)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+    
+    def update(self, request, *args, **kwargs):
+        """Обновление товара с inline данными"""
+        from django.db import transaction
+        kwargs.pop('partial', False)
+        product = self.get_object()
+        data = request.data
+        
+        with transaction.atomic():
+            # Обновляем основные поля товара
+            product.name = data.get('name', product.name)
+            if 'slug' in data:
+                product.slug = data['slug'] or product.slug
+            product.description = data.get('description', product.description)
+            if 'category' in data:
+                product.category_id = data['category']
+            if 'brand' in data:
+                product.brand_id = data['brand'] or None
+            if 'price' in data:
+                product.price = data['price'] or None
+            if 'is_available' in data:
+                product.is_available = data['is_available']
+            if 'manufacturer_sku' in data:
+                product.manufacturer_sku = data['manufacturer_sku'] or ''
+            if 'internal_sku' in data and data['internal_sku']:
+                product.internal_sku = data['internal_sku']
+            product.save()
+            
+            # Обновляем характеристики
+            if 'features' in data:
+                product.features.all().delete()
+                for feat in data['features']:
+                    if feat.get('feature_id') and feat.get('value_id'):
+                        ProductFeature.objects.create(
+                            product=product,
+                            feature_id=feat['feature_id'],
+                            value_id=feat['value_id']
+                        )
+            
+            # Обновляем группы тегов
+            if 'tag_groups' in data:
+                product.tag_groups.all().delete()
+                for tg in data['tag_groups']:
+                    if tg.get('group_name_id'):
+                        tag_group = ProductTagGroup.objects.create(
+                            product=product,
+                            group_name_id=tg['group_name_id']
+                        )
+                        tag_ids = tg.get('tag_ids', [])
+                        if tag_ids:
+                            tag_group.tags.set(tag_ids)
+            
+            # Обновляем изображения (порядок и is_main)
+            if 'images' in data:
+                for img_data in data['images']:
+                    if img_data.get('id'):
+                        try:
+                            img = Image.objects.get(id=img_data['id'], product=product)
+                            if 'is_main' in img_data:
+                                img.is_main = img_data['is_main']
+                            if 'order' in img_data:
+                                img.order = img_data['order']
+                            if img_data.get('_delete'):
+                                img.delete()
+                            else:
+                                img.save()
+                        except Image.DoesNotExist:
+                            pass
+        
+        serializer = self.get_serializer(product)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['post'], url_path='upload-image')
+    def upload_image(self, request, pk=None):
+        product = self.get_object()
+        files = request.FILES.getlist('images')
+        if not files:
+            file = request.FILES.get('image')
+            if file:
+                files = [file]
+        
+        if not files:
+            return Response({'error': 'No images provided'}, status=400)
+        
+        uploaded = []
+        for f in files:
+            is_valid, error_msg = validate_uploaded_image(f)
+            if not is_valid:
+                return Response({'error': error_msg}, status=400)
+            img = Image.objects.create(product=product, image=f)
+            uploaded.append({'id': img.id, 'image': img.image.url if img.image else None})
+        
+        return Response({'images': uploaded}, status=201)
+    
+    @action(detail=True, methods=['delete'], url_path='delete-image/(?P<image_id>[0-9]+)')
+    def delete_image(self, request, pk=None, image_id=None):
+        product = self.get_object()
+        try:
+            img = Image.objects.get(id=image_id, product=product)
+            img.delete()
+            return Response({'success': True})
+        except Image.DoesNotExist:
+            return Response({'error': 'Image not found'}, status=404)
+
+
+class CategoryAdminViewSet(viewsets.ModelViewSet):
+    """CRUD для категорий (админка)"""
+    queryset = Category.objects.all().order_by('order', 'name')
+    serializer_class = CategoryAdminSerializer
+    lookup_field = 'pk'
+    permission_classes = [IsAdminUser]
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        search = self.request.query_params.get('search')
+        parent = self.request.query_params.get('parent')
+        
+        if search:
+            queryset = queryset.filter(name__icontains=search)
+        if parent:
+            if parent == 'null':
+                queryset = queryset.filter(parent__isnull=True)
+            else:
+                queryset = queryset.filter(parent_id=parent)
+        
+        return queryset
+    
+    @action(detail=True, methods=['post'], url_path='upload-image')
+    def upload_image(self, request, pk=None):
+        category = self.get_object()
+        image = request.FILES.get('image')
+        if image:
+            is_valid, error_msg = validate_uploaded_image(image)
+            if not is_valid:
+                return Response({'error': error_msg}, status=400)
+            category.image = image
+            category.save()
+            return Response({'image': category.image.url if category.image else None})
+        return Response({'error': 'No image provided'}, status=400)
+
+
+class BrandAdminViewSet(viewsets.ModelViewSet):
+    """CRUD для брендов (админка)"""
+    queryset = Brand.objects.all().order_by('name')
+    serializer_class = BrandAdminSerializer
+    lookup_field = 'pk'
+    permission_classes = [IsAdminUser]
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        search = self.request.query_params.get('search')
+        if search:
+            queryset = queryset.filter(
+                Q(name__icontains=search) | Q(description__icontains=search)
+            )
+        return queryset
+    
+    @action(detail=True, methods=['post'], url_path='upload-logo')
+    def upload_logo(self, request, pk=None):
+        brand = self.get_object()
+        logo = request.FILES.get('logo')
+        if logo:
+            is_valid, error_msg = validate_uploaded_image(logo)
+            if not is_valid:
+                return Response({'error': error_msg}, status=400)
+            brand.logo = logo
+            brand.save()
+            return Response({'logo': brand.logo.url if brand.logo else None})
+        return Response({'error': 'No logo provided'}, status=400)
+
+
+class TagAdminViewSet(viewsets.ModelViewSet):
+    """CRUD для тегов (админка)"""
+    queryset = Tag.objects.all().order_by('name')
+    serializer_class = TagAdminSerializer
+    lookup_field = 'pk'
+    permission_classes = [IsAdminUser]
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        search = self.request.query_params.get('search')
+        category = self.request.query_params.get('category')
+        tag_name = self.request.query_params.get('tag_name')
+        
+        if search:
+            queryset = queryset.filter(name__icontains=search)
+        if category:
+            queryset = queryset.filter(category_id=category)
+        if tag_name:
+            queryset = queryset.filter(tag_name_id=tag_name)
+        
+        return queryset
+
+
+class TagNameAdminViewSet(viewsets.ModelViewSet):
+    """CRUD для имен тегов (админка)"""
+    queryset = TagName.objects.all().order_by('name')
+    serializer_class = TagNameAdminSerializer
+    lookup_field = 'pk'
+    permission_classes = [IsAdminUser]
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        search = self.request.query_params.get('search')
+        category = self.request.query_params.get('category')
+        
+        if search:
+            queryset = queryset.filter(name__icontains=search)
+        if category:
+            queryset = queryset.filter(category_id=category)
+        
+        return queryset
+
+
+@api_view(['GET'])
+@permission_classes([IsAdminUser])
+def tags_by_tag_name(request, tag_name_id):
+    """Получение тегов по группе (TagName)"""
+    tags = Tag.objects.filter(tag_name_id=tag_name_id).order_by('name')
+    serializer = TagAdminSerializer(tags, many=True)
+    return Response(serializer.data)
+
+
+class FeatureAdminViewSet(viewsets.ModelViewSet):
+    """CRUD для характеристик (админка)"""
+    queryset = Feature.objects.select_related('category').prefetch_related('values').order_by('name')
+    serializer_class = FeatureAdminSerializer
+    lookup_field = 'pk'
+    pagination_class = StandardResultsSetPagination
+    permission_classes = [IsAdminUser]
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        search = self.request.query_params.get('search')
+        category = self.request.query_params.get('category')
+        
+        if search:
+            queryset = queryset.filter(name__icontains=search)
+        if category:
+            queryset = queryset.filter(category_id=category)
+        
+        return queryset
+    
+    @action(detail=False, methods=['get'])
+    def debug_first(self, request):
+        """Debug action to show first feature with all details"""
+        try:
+            feature = Feature.objects.select_related('category').prefetch_related('values').first()
+            if feature:
+                serializer = self.get_serializer(feature)
+                return Response({
+                    'feature': serializer.data,
+                    'raw_values': [{'id': v.id, 'value': v.value} for v in feature.values.all()]
+                })
+            return Response({'error': 'No features found'}, status=404)
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
+
+
+class FeatureValueAdminViewSet(viewsets.ModelViewSet):
+    """CRUD для значений характеристик (админка)"""
+    queryset = FeatureValue.objects.select_related('category').prefetch_related('features').order_by('value')
+    serializer_class = FeatureValueAdminSerializer
+    lookup_field = 'pk'
+    pagination_class = StandardResultsSetPagination
+    permission_classes = [IsAdminUser]
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        search = self.request.query_params.get('search')
+        category = self.request.query_params.get('category')
+        feature = self.request.query_params.get('feature')
+        
+        if search:
+            queryset = queryset.filter(value__icontains=search)
+        if category:
+            queryset = queryset.filter(category_id=category)
+        if feature:
+            # Фильтруем значения, привязанные к указанной характеристике
+            queryset = queryset.filter(features__id=feature).distinct()
+        
+        return queryset
+
+
+class NewsAdminViewSet(viewsets.ModelViewSet):
+    """CRUD для новостей (админка)"""
+    queryset = NewsItem.objects.all().order_by('-pub_date')
+    serializer_class = NewsAdminSerializer
+    lookup_field = 'pk'
+    permission_classes = [IsAdminUser]
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        search = self.request.query_params.get('search')
+        is_published = self.request.query_params.get('is_published')
+        
+        if search:
+            queryset = queryset.filter(
+                Q(title__icontains=search) | Q(content__icontains=search)
+            )
+        if is_published is not None:
+            queryset = queryset.filter(is_published=is_published.lower() == 'true')
+        
+        return queryset
+
+
+class ImageAdminViewSet(viewsets.ModelViewSet):
+    """CRUD для изображений товаров (админка)"""
+    queryset = Image.objects.all().order_by('order')
+    serializer_class = ImageAdminSerializer
+    lookup_field = 'pk'
+    permission_classes = [IsAdminUser]
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        product = self.request.query_params.get('product')
+        if product:
+            queryset = queryset.filter(product_id=product)
+        return queryset
+
+
+class AboutContentAdminView(generics.RetrieveUpdateAPIView):
+    """Получение и обновление страницы О нас"""
+    serializer_class = AboutContentAdminSerializer
+    permission_classes = [IsAdminUser]
+    
+    def get_object(self):
+        from django.db import transaction as db_transaction
+        with db_transaction.atomic():
+            obj = AboutContent.objects.select_for_update().first()
+            if not obj:
+                obj = AboutContent.objects.create(title='О нас', content='')
+        return obj
+
+
+class ContactInfoAdminView(generics.RetrieveUpdateAPIView):
+    """Получение и обновление контактной информации"""
+    serializer_class = ContactInfoAdminSerializer
+    permission_classes = [IsAdminUser]
+    
+    def get_object(self):
+        from django.db import transaction as db_transaction
+        with db_transaction.atomic():
+            obj = ContactInfo.objects.select_for_update().first()
+            if not obj:
+                obj = ContactInfo.objects.create(phone='', email='', address='')
+        return obj
+
+
+class ContactMessageAdminViewSet(viewsets.ModelViewSet):
+    """Управление сообщениями от посетителей"""
+    queryset = ContactMessage.objects.all().order_by('-created_at')
+    serializer_class = ContactMessageAdminSerializer
+    permission_classes = [IsAdminUser]
+    lookup_field = 'pk'
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        is_processed = self.request.query_params.get('is_processed')
+        
+        if is_processed is not None:
+            queryset = queryset.filter(is_processed=is_processed.lower() == 'true')
+        
+        return queryset
+    
+    @action(detail=True, methods=['post'], url_path='mark-processed')
+    def mark_processed(self, request, pk=None):
+        message = self.get_object()
+        message.is_processed = True
+        message.save()
+        return Response({'status': 'processed', 'id': message.id})
+    
+    @action(detail=True, methods=['post'], url_path='mark-unprocessed')
+    def mark_unprocessed(self, request, pk=None):
+        message = self.get_object()
+        message.is_processed = False
+        message.save()
+        return Response({'status': 'unprocessed', 'id': message.id})
+
+
+# ============ AUTH VIEWS ============
+
+# ============ BANNER ADMIN VIEWSET ============
+class BannerAdminViewSet(viewsets.ModelViewSet):
+    """Admin ViewSet для управления баннерами"""
+    queryset = Banner.objects.all().order_by('order')
+    serializer_class = BannerSerializer
+    permission_classes = [IsAdminUser]
+    pagination_class = None
+
+    def update(self, request, *args, **kwargs):
+        
+        # Если явно передан image: null, удаляем старое изображение
+        if 'image' in request.data and request.data['image'] is None:
+            banner = self.get_object()
+            if banner.image:
+                banner.image.delete(save=False)
+            banner.image = None
+            banner.save()
+        
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        return super().destroy(request, *args, **kwargs)
+
+    @action(detail=True, methods=['post'], url_path='upload-image')
+    def upload_image(self, request, pk=None):
+        """Загрузка изображения для баннера"""
+        banner = self.get_object()
+        image = request.FILES.get('image')
+        
+        if not image:
+            return Response({'error': 'No image provided'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        is_valid, error_msg = validate_uploaded_image(image)
+        if not is_valid:
+            return Response({'error': error_msg}, status=status.HTTP_400_BAD_REQUEST)
+        
+        banner.image = image
+        banner.save()
+        
+        serializer = self.get_serializer(banner)
+        return Response(serializer.data)
+
+
+@api_view(['POST'])
+def admin_login(request):
+    """Вход в админку"""
+    serializer = LoginSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    username = serializer.validated_data['username']
+    password = serializer.validated_data['password']
+    
+    user = authenticate(request, username=username, password=password)
+    
+    if user is not None:
+        if user.is_staff or user.is_superuser:
+            login(request, user)
+            return Response({
+                'message': 'Успешный вход',
+                'user': UserSerializer(user).data
+            })
+        else:
+            return Response({'error': 'Доступ запрещен. Требуются права администратора.'}, 
+                          status=status.HTTP_403_FORBIDDEN)
+    else:
+        return Response({'error': 'Неверный логин или пароль'}, 
+                       status=status.HTTP_401_UNAUTHORIZED)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def admin_change_password(request):
+    """Смена пароля для админов (JWT совместимая версия)"""
+    if not request.user.is_staff:
+        return Response(
+            {'detail': 'Only admin users can access this endpoint.'},
+            status=status.HTTP_403_FORBIDDEN
+        )
+    
+    serializer = ChangePasswordSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    user = request.user
+    if not user.check_password(serializer.validated_data['old_password']):
+        return Response({'error': 'Неверный текущий пароль'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    user.set_password(serializer.validated_data['new_password'])
+    user.save()
+    
+    return Response({'message': 'Пароль успешно изменен'})
+
+
+@api_view(['PUT', 'PATCH'])
+@permission_classes([IsAuthenticated])
+def admin_update_profile(request):
+    """Обновление профиля админа (JWT совместимая версия)"""
+    if not request.user.is_staff:
+        return Response(
+            {'detail': 'Only admin users can access this endpoint.'},
+            status=status.HTTP_403_FORBIDDEN
+        )
+    
+    serializer = UpdateProfileSerializer(request.user, data=request.data, partial=True)
+    if serializer.is_valid():
+        serializer.save()
+        return Response(UserSerializer(request.user).data)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+# ============ DASHBOARD STATS ============
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def admin_stats(request):
+    """Статистика для Dashboard (JWT совместимая версия)"""
+    if not request.user.is_staff:
+        return Response(
+            {'detail': 'Only admin users can access this endpoint.'},
+            status=status.HTTP_403_FORBIDDEN
+        )
+    
+    stats = {
+        'products_count': Product.objects.count(),
+        'categories_count': Category.objects.count(),
+        'brands_count': Brand.objects.count(),
+        'news_count': NewsItem.objects.count(),
+        'published_news_count': NewsItem.objects.filter(is_published=True).count(),
+        'unread_messages': ContactMessage.objects.filter(is_processed=False).count(),
+        'total_messages': ContactMessage.objects.count(),
+        'available_products': Product.objects.filter(is_available=True).count(),
+        'tags_count': Tag.objects.count(),
+        'features_count': Feature.objects.count(),
+        'orders_count': Order.objects.count(),
+        'new_orders_count': Order.objects.filter(status='new').count(),
+    }
+    return Response(stats)
+
+
+# ============ ORDERS ============
+
+class OrderViewSet(viewsets.ModelViewSet):
+    """Публичный endpoint для создания заказов.
+    Только POST (create) разрешён анонимным пользователям.
+    GET/PATCH/DELETE требуют авторизации (только для админа).
+    """
+    queryset = Order.objects.prefetch_related('items').order_by('-created_at')
+
+    def get_serializer_class(self):
+        if self.request.user and self.request.user.is_authenticated:
+            return OrderAdminSerializer
+        return OrderSerializer
+
+    def get_permissions(self):
+        if self.action == 'create':
+            return [AllowAny()]
+        return [IsAdminUser()]
+
+
+# ============ REVIEWS & QUESTIONS ============
+
+class ProductReviewViewSet(viewsets.ModelViewSet):
+    serializer_class = ProductReviewSerializer
+    pagination_class = StandardResultsSetPagination
+
+    def get_queryset(self):
+        product_slug = self.kwargs.get('product_slug')
+        return ProductReview.objects.filter(
+            product__slug=product_slug,
+            is_published=True
+        ).order_by('-created_at')
+
+    def get_permissions(self):
+        if self.action in ('list', 'retrieve', 'create'):
+            return [AllowAny()]
+        return [IsAuthenticated()]
+
+    def perform_create(self, serializer):
+        product_slug = self.kwargs.get('product_slug')
+        product = Product.objects.get(slug=product_slug)
+        serializer.save(product=product)
+
+
+class ProductQuestionViewSet(viewsets.ModelViewSet):
+    serializer_class = ProductQuestionSerializer
+    pagination_class = StandardResultsSetPagination
+
+    def get_queryset(self):
+        product_slug = self.kwargs.get('product_slug')
+        return ProductQuestion.objects.filter(
+            product__slug=product_slug,
+            is_published=True
+        ).order_by('-created_at')
+
+    def get_permissions(self):
+        if self.action in ('list', 'retrieve', 'create'):
+            return [AllowAny()]
+        return [IsAuthenticated()]
+
+    def perform_create(self, serializer):
+        product_slug = self.kwargs.get('product_slug')
+        product = Product.objects.get(slug=product_slug)
+        serializer.save(product=product)
+
+
+@api_view(['GET'])
+def similar_products(request, slug):
+    """Get similar products from the same category"""
+    try:
+        product = Product.objects.select_related('category').get(slug=slug)
+    except Product.DoesNotExist:
+        return Response({'detail': 'Not found'}, status=404)
+
+    similar = Product.objects.filter(
+        category=product.category,
+        is_available=True
+    ).exclude(id=product.id).select_related(
+        'category', 'brand'
+    ).prefetch_related('images')[:12]
+
+    serializer = ProductListSerializer(similar, many=True, context={'request': request})
+    return Response(serializer.data)
+
+
+# ============ ADMIN: REVIEWS & QUESTIONS ============
+
+class ReviewAdminViewSet(viewsets.ModelViewSet):
+    """Управление отзывами о товарах"""
+    queryset = ProductReview.objects.select_related('product').order_by('-created_at')
+    serializer_class = ProductReviewAdminSerializer
+    permission_classes = [IsAdminUser]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        is_published = self.request.query_params.get('is_published')
+        product = self.request.query_params.get('product')
+        rating = self.request.query_params.get('rating')
+        search = self.request.query_params.get('search')
+        if is_published is not None:
+            queryset = queryset.filter(is_published=is_published.lower() == 'true')
+        if product:
+            queryset = queryset.filter(product_id=product)
+        if rating:
+            queryset = queryset.filter(rating=rating)
+        if search:
+            queryset = queryset.filter(
+                Q(author_name__icontains=search) | Q(text__icontains=search)
+            )
+        return queryset
+
+    def perform_update(self, serializer):
+        from django.utils import timezone
+        instance = serializer.save()
+        if instance.admin_reply and not instance.admin_reply_date:
+            instance.admin_reply_date = timezone.now()
+            instance.save()
+
+
+class QuestionAdminViewSet(viewsets.ModelViewSet):
+    """Управление вопросами о товарах"""
+    queryset = ProductQuestion.objects.select_related('product').order_by('-created_at')
+    serializer_class = ProductQuestionAdminSerializer
+    permission_classes = [IsAdminUser]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        is_published = self.request.query_params.get('is_published')
+        product = self.request.query_params.get('product')
+        search = self.request.query_params.get('search')
+        if is_published is not None:
+            queryset = queryset.filter(is_published=is_published.lower() == 'true')
+        if product:
+            queryset = queryset.filter(product_id=product)
+        if search:
+            queryset = queryset.filter(
+                Q(author_name__icontains=search) | Q(text__icontains=search)
+            )
+        return queryset
+
+    def perform_update(self, serializer):
+        from django.utils import timezone
+        instance = serializer.save()
+        if instance.admin_reply and not instance.admin_reply_date:
+            instance.admin_reply_date = timezone.now()
+            instance.save()
