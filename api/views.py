@@ -3,7 +3,7 @@ from decimal import Decimal
 from rest_framework import viewsets, generics, status, filters
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.permissions import IsAuthenticated, AllowAny, IsAdminUser
 from django.http import Http404
 from django.http import JsonResponse
 from rest_framework.decorators import api_view, action, permission_classes
@@ -172,6 +172,7 @@ def feature_values_by_feature(request):
 class TagViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Tag.objects.all().order_by('name')
     serializer_class = TagSerializer
+    permission_classes = [AllowAny]
 
     @action(detail=False, methods=['get'])
     def with_count(self, request):
@@ -298,6 +299,7 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Product.objects.all()
     lookup_field = 'slug'
     pagination_class = StandardResultsSetPagination
+    permission_classes = [AllowAny]
 
     def get_queryset(self):
         queryset = Product.objects.all()
@@ -358,6 +360,7 @@ class BrandViewSet(viewsets.ReadOnlyModelViewSet):
     filter_backends = [filters.SearchFilter, BrandFilter]
     search_fields = ['name', 'description']
     pagination_class = StandardResultsSetPagination
+    permission_classes = [AllowAny]
 
     # Кэширование списка брендов на 5 минут
     @method_decorator(cache_page(60 * 5))
@@ -445,6 +448,7 @@ class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Category.objects.filter(parent=None).order_by('order', 'name')
     serializer_class = CategorySerializer
     lookup_field = 'slug'
+    permission_classes = [AllowAny]
 
     # Кэширование списка категорий на 5 минут
     @method_decorator(cache_page(60 * 5))
@@ -591,6 +595,7 @@ class BannerViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Banner.objects.filter(is_active=True).order_by('order')
     serializer_class = BannerSerializer
     pagination_class = None
+    permission_classes = [AllowAny]
 
     @method_decorator(cache_page(60 * 5))
     def list(self, request, *args, **kwargs):
@@ -601,6 +606,7 @@ class NewsViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = NewsItem.objects.filter(is_published=True).order_by('-pub_date')
     lookup_field = 'slug'
     pagination_class = StandardResultsSetPagination
+    permission_classes = [AllowAny]
 
     def get_serializer_class(self):
         if self.action == 'retrieve':

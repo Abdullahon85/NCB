@@ -86,8 +86,10 @@ MIDDLEWARE = [
 # В production убедитесь что здесь только ваши настоящие домены
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
+    "http://localhost:5000",
     "http://localhost:5173",
     "http://localhost:5174",
+    "http://127.0.0.1:5000",
     "http://127.0.0.1:5173",
     "http://localhost:8080",
     "https://nargi.netlify.app",
@@ -203,8 +205,10 @@ CSRF_COOKIE_SAMESITE = 'Lax'
 CSRF_COOKIE_SECURE = not DEBUG  # HTTPS only in production
 CSRF_COOKIE_HTTPONLY = False  # JS needs to read CSRF token for API calls
 CSRF_TRUSTED_ORIGINS = [
+    "http://localhost:5000",
     "http://localhost:5173",
     "http://localhost:5174",
+    "http://127.0.0.1:5000",
     "http://127.0.0.1:5173",
     "https://nargi.netlify.app",
     "https://ncff.netlify.app",
